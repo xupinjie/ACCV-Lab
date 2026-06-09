@@ -101,15 +101,10 @@ class PyNvGopDecoder {
                            std::vector<RGBFrame>* out_if_color_converted,
                            const FastStreamInfo* fastStreamInfos = nullptr);
 
-    SerializedPacketBundle get_gop(const std::vector<std::string>& filepaths,
-                                   const std::vector<int> frame_ids,
-                                   const FastStreamInfo* fastStreamInfos = nullptr);
-
     /**
      * Extract GOP data for multiple videos and return them as separate bundles
      * 
-     * Similar to get_gop(), but instead of merging all video data into one bundle,
-     * this method returns a separate SerializedPacketBundle for each video file.
+     * This method returns a separate SerializedPacketBundle for each video file.
      * This is useful when you want to cache or process each video's data independently.
      * 
      * @param filepaths Vector of video file paths
@@ -152,35 +147,14 @@ class PyNvGopDecoder {
                               std::vector<RGBFrame>* out_if_color_converted);
 
     /**
-     * Merge multiple packet data buffers containing SerializedPacketBundle data into a single data buffer (multithreaded)
-     * @param packet_data_buffers Vector of binary data buffer pointers (already read from files)
-     * @param buffer_sizes Vector of buffer sizes corresponding to each buffer pointer
-     * @param merged_data Output pointer to the merged binary data (caller must delete[])
-     * @param merged_size Output size of the merged binary data
-     */
-    void MergePacketDataToOne(const std::vector<uint8_t*>& packet_data_buffers,
-                              const std::vector<size_t>& buffer_sizes,
-                              std::unique_ptr<uint8_t[]>& merged_data, size_t& merged_size);
-
-    /**
-     * Merge multiple GOP binary files containing SerializedPacketBundle data into a single data buffer (multithreaded)
-     * @param file_paths Vector of file paths to binary files
-     * @param merged_data Output pointer to the merged binary data (caller must delete[])
-     * @param merged_size Output size of the merged binary data
-     */
-    void MergeBinaryFilesToPacketData(const std::vector<std::string>& file_paths,
-                                      std::unique_ptr<uint8_t[]>& merged_data, size_t& merged_size);
-
-    /**
      * Load GOP data from multiple binary files in parallel
      * 
      * This function loads serialized GOP data from multiple files concurrently,
      * with parallel file reading, validation, and error handling. This is a reusable
-     * component for loading GOP binary files that can be used by multiple higher-level
-     * functions like MergeBinaryFilesToPacketData and LoadGopList (Python binding).
+     * component for loading GOP binary files and returning one buffer per file.
      * 
      * Binary File Format:
-     * - Files must contain SerializedPacketBundle data (same format as GetGOP output)
+     * - Files must contain SerializedPacketBundle data (same format as one GetGOPList item)
      * - Header: uint32_t total_frames + size_t[total_frames] frame_offsets
      * - Frame data blocks follow the header
      * 
@@ -691,8 +665,7 @@ class PyNvGopDecoder {
      * Internal implementation for GOP extraction
      * 
      * This method extracts GOP data from video files and returns the intermediate data structures
-     * needed to create SerializedPacketBundles. It is used by both get_gop() and get_gop_list()
-     * to avoid code duplication.
+     * needed to create SerializedPacketBundles for get_gop_list().
      * 
      * @param filepaths Vector of video file paths
      * @param frame_ids Vector of frame IDs corresponding to each filepath

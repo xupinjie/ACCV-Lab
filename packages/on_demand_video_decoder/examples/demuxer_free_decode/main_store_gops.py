@@ -174,20 +174,21 @@ def demuxer_free_decoder_test_load(
         print(f"  Files: {[os.path.basename(f) for f in file_list]}")
 
         try:
-            # Load GOP data using the GOPStorageManager interface - returns merged numpy_data directly
-            merged_numpy_data = storage.load_gops(frame_id_list, file_list)
+            # Load GOP data using the GOPStorageManager interface - returns one array per video.
+            gop_data_list = storage.load_gops(frame_id_list, file_list)
 
-            if merged_numpy_data is None:
+            if gop_data_list is None:
                 print(
                     f"  Warning: Could not load GOP data for files {[os.path.basename(f) for f in file_list]} and frames {frame_id_list}"
                 )
                 continue
 
-            print(f"  Loaded merged data: {merged_numpy_data.size} bytes")
+            total_bytes = sum(gop_data.size for gop_data in gop_data_list)
+            print(f"  Loaded GOP data: {len(gop_data_list)} arrays, {total_bytes} bytes total")
 
-            # Decode frames using DecodeFromGOPRGB with the merged data
-            decoded_frames = nv_gop_decoder.DecodeFromGOPRGB(
-                merged_numpy_data, file_list, frame_id_list, True  # as_bgr=True for RGB output
+            # Decode frames using DecodeFromGOPListRGB with the per-video data.
+            decoded_frames = nv_gop_decoder.DecodeFromGOPListRGB(
+                gop_data_list, file_list, frame_id_list, True  # as_bgr=True for RGB output
             )
 
             print(f"  Successfully decoded {len(decoded_frames)} frames")

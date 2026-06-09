@@ -244,7 +244,7 @@ Extracts GOP packets from all ``.mp4`` files under ``video_base_path``, saves ea
 
 **load_gops() - Runtime Method:**
 
-Loads required GOP packets by consulting the persistent index, returns merged GOP data via ``LoadGops`` for GPU decoding, and supports variable GOP sizes within a video.
+Loads required GOP packets by consulting the persistent index, returns per-video GOP arrays via ``LoadGopsToList`` for GPU decoding, and supports variable GOP sizes within a video.
 
 .. note-literalinclude:: ../../examples/demuxer_free_decode/gop_storage.py
    :language: python
@@ -360,4 +360,3 @@ Use NVIDIA Nsight Systems for detailed performance analysis:
 .. code-block:: bash
 
    nsys profile --trace-fork-before-exec true -w true -f true -t cuda,nvtx,osrt,cudnn,cublas,nvvideo --gpu-video-device all -x true -o dataloader_decode_only python examples/demuxer_free_decode/main.py --index_file examples/index_frame.json
-

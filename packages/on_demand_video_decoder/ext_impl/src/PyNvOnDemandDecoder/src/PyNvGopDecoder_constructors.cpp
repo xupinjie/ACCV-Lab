@@ -376,8 +376,8 @@ void Init_PyNvGopDecoder(py::module& m) {
             ValueError: If dst_filepath is empty
         
         Example:
-            >>> gop_data, first_ids, gop_lens = decoder.GetGOP(['v0.mp4', 'v1.mp4', 'v2.mp4'], [0, 10, 20])
-            >>> SavePacketsToFile(packets, 'cached_packets.bin')
+            >>> gop_data, first_ids, gop_lens = decoder.GetGOPList(['v0.mp4'], [0])[0]
+            >>> SavePacketsToFile(gop_data, 'cached_packets.bin')
         )pbdoc");
 
     py::class_<PyNvGopDecoder, shared_ptr<PyNvGopDecoder>>(m, "PyNvGopDecoder", py::module_local())
@@ -488,75 +488,6 @@ void Init_PyNvGopDecoder(py::module& m) {
                 >>> print(f"Decoded {len(rgb_frames)} RGB frames")
             )pbdoc")
         .def(
-            "GetGOP",
-            [](std::shared_ptr<PyNvGopDecoder>& dec, const std::vector<std::string>& filepaths,
-               const std::vector<int> frame_ids, std::vector<FastStreamInfo> fastStreamInfos) {
-                try {
-                    SerializedPacketBundle serialized_data;
-                    // Release GIL for file I/O and demuxing
-                    {
-                        py::gil_scoped_release release;
-                        serialized_data = dec->get_gop(
-                            filepaths, frame_ids, fastStreamInfos.empty() ? nullptr : fastStreamInfos.data());
-                    }
-                    // GIL is re-acquired here for creating Python objects
-
-                    // Create numpy array from serialized data
-                    auto capsule = py::capsule(serialized_data.data.release(),
-                                               [](void* ptr) { delete[] static_cast<uint8_t*>(ptr); });
-                    py::array_t<uint8_t> numpy_data(serialized_data.size,
-                                                    static_cast<uint8_t*>(capsule.get_pointer()), capsule);
-
-                    // Return tuple with numpy_data, gop_lens, and first_frame_ids directly from the bundle
-                    return py::make_tuple(numpy_data, serialized_data.first_frame_ids,
-                                          serialized_data.gop_lens);
-
-                } catch (const std::exception& e) {
-                    throw std::runtime_error(e.what());
-                }
-            },
-            py::arg("filepaths"), py::arg("frame_ids"),
-            py::arg("fastStreamInfos") = std::vector<FastStreamInfo>{},
-            R"pbdoc(
-            Extracts video GOP data without performing the decode step.
-            
-            This method extracts video GOP (Group of Pictures) data from the specified frames and returns
-            them in a self-contained binary format. The GOP data can be decoded later
-            using :meth:`DecodeFromPacketListRGB` method, enabling separation 
-            of demuxing and decoding.
-            
-            Args:
-                filepaths: List of video file paths to extract GOP data from
-                frame_ids: List of frame IDs to extract GOP data for
-                fastStreamInfos: Optional list of FastStreamInfo objects containing pre-extracted stream information by :func:`GetFastInitInfo`. If provided, this can improve performance by avoiding stream analysis.
-            
-            Returns:
-                Tuple containing
-
-                - numpy array with serialized GOP data
-                - list of first frame IDs for each GOP
-                - list of GOP lengths for each GOP
-            
-            The numpy array contains a self-contained binary format with embedded frame offset table:
-
-            - Header: total_frames (uint32_t) + frame_offsets array (size_t[total_frames])
-            - Frame data blocks follow the header
-            - Parse the header once to get direct access to any frame
-            - Enables efficient random access and parallel processing
-            - No external metadata files needed
-            
-            Raises:
-                RuntimeError: If video files cannot be opened or GOP extraction fails
-            
-            Example:
-
-                Ref to Sample: `samples/SampleSeparationAccess.py`
-
-                >>> decoder = PyNvGopDecoder(maxfiles=10)
-                >>> gop_data, first_ids, gop_lens = decoder.GetGOP(['video.mp4', 'video2.mp4'], [0, 10])
-                >>> print(f"Extracted GOP data for {len(first_ids)} GOPs")
-            )pbdoc")
-        .def(
             "GetGOPList",
             [](std::shared_ptr<PyNvGopDecoder>& dec, const std::vector<std::string>& filepaths,
                const std::vector<int> frame_ids, std::vector<FastStreamInfo> fastStreamInfos) {
@@ -598,8 +529,7 @@ void Init_PyNvGopDecoder(py::module& m) {
             R"pbdoc(
             Extracts video GOP data for multiple videos and returns them as separate bundles.
             
-            This method is similar to :meth:`GetGOP` but returns a separate bundle for each video file
-            instead of merging all data into one bundle. This is useful when you want to cache
+            This method returns a separate bundle for each video file, which lets you cache
             or process each video's data independently.
             
             Args:
@@ -665,13 +595,13 @@ void Init_PyNvGopDecoder(py::module& m) {
             py::arg("numpy_data"), py::arg("filepaths"), py::arg("frame_ids"),
             R"pbdoc(
             Decodes video GOP data into YUV frames without demuxing again.
-            
+
             This method decodes previously extracted GOP data into YUV frames. It's
             useful for scenarios where you want to separate GOP extraction from
             decoding, or when you have pre-extracted GOP data.
             
             Args:
-                numpy_data: Numpy array containing serialized GOP data from :meth:`GetGOP`
+                numpy_data: Numpy array containing serialized GOP data from one :meth:`GetGOPList` result
                 filepaths: List of video file paths (for metadata purposes)
                 frame_ids: List of frame IDs to decode from the GOP data
             
@@ -683,57 +613,8 @@ void Init_PyNvGopDecoder(py::module& m) {
                 ValueError: If frame_ids don't match the GOP data
             
             Example:
-                >>> gop_data, first_ids, gop_lens = decoder.GetGOP(['video.mp4', 'video2.mp4'], [0, 10])
-                >>> frames = decoder.DecodeFromGOP(gop_data, ['video.mp4', 'video2.mp4'], [0, 10])
-            )pbdoc")
-        .def(
-            "DecodeFromGOPRGB",
-            [](std::shared_ptr<PyNvGopDecoder>& dec, const py::array_t<uint8_t>& numpy_data,
-               const std::vector<std::string>& filepaths, const std::vector<int> frame_ids, bool as_bgr) {
-                try {
-                    // Extract data pointer while holding GIL
-                    const uint8_t* data_ptr = static_cast<const uint8_t*>(numpy_data.data());
-                    size_t data_size = numpy_data.size();
-
-                    std::vector<RGBFrame> result;
-                    // Release GIL for GPU decoding
-                    {
-                        py::gil_scoped_release release;
-                        dec->decode_from_gop(data_ptr, data_size, filepaths, frame_ids, true, as_bgr, nullptr,
-                                             &result);
-                    }
-                    return result;
-                } catch (const std::exception& e) {
-                    throw std::runtime_error(e.what());
-                }
-            },
-            py::arg("numpy_data"), py::arg("filepaths"), py::arg("frame_ids"), py::arg("as_bgr") = false,
-            R"pbdoc(
-            Decodes video GOP data into RGB frames without demuxing again.
-            
-            This method decodes previously extracted GOP data into RGB/BGR frames.
-            It's useful for scenarios where you want to separate GOP extraction
-            from decoding and need RGB output.
-            
-            Args:
-                numpy_data: Numpy array containing serialized GOP data from :meth:`GetGOP`
-                filepaths: List of video file paths (for metadata purposes)
-                frame_ids: List of frame IDs to decode from the GOP data
-                as_bgr: Whether to output in BGR format (True) or RGB format (False)
-            
-            Returns:
-                List of RGBFrame objects containing the decoded and color-converted frame data
-            
-            Raises:
-                RuntimeError: If GOP data is invalid or decoding fails
-                ValueError: If frame_ids don't match the GOP data
-            
-            Example:
-
-                Ref to Sample: `samples/SampleSeparationAccess.py`
-                
-                >>> gop_data, first_ids, gop_lens = decoder.GetGOP(['video.mp4', 'video2.mp4'], [0, 10])
-                >>> rgb_frames = decoder.DecodeFromGOPRGB(gop_data, ['video.mp4', 'video2.mp4'], [0, 10], as_bgr=True)
+                >>> gop_data, first_ids, gop_lens = decoder.GetGOPList(['video.mp4'], [0])[0]
+                >>> frames = decoder.DecodeFromGOP(gop_data, ['video.mp4'], [0])
             )pbdoc")
         .def(
             "DecodeFromPacketListRGB",
@@ -860,7 +741,7 @@ void Init_PyNvGopDecoder(py::module& m) {
             via a unified pipeline. Useful for processing multiple GOP bundles simultaneously.
             
             Args:
-                numpy_datas: List of numpy arrays, each containing a SerializedPacketBundle from :meth:`GetGOP`
+                numpy_datas: List of numpy arrays, each containing a SerializedPacketBundle from :meth:`GetGOPList`
                 filepaths: List of source file paths for each requested frame (aggregated)
                 frame_ids: List of target frame IDs (aggregated across all bundles)
                 as_bgr: Whether to output in BGR format (True) or RGB format (False)
@@ -930,52 +811,6 @@ void Init_PyNvGopDecoder(py::module& m) {
                 ValueError: If input arrays have mismatched dimensions
             )pbdoc")
         .def(
-            "LoadGops",
-            [](std::shared_ptr<PyNvGopDecoder>& dec, const std::vector<std::string>& file_paths) {
-                try {
-                    std::unique_ptr<uint8_t[]> merged_data;
-                    size_t merged_size;
-
-                    // Release GIL for file I/O
-                    {
-                        py::gil_scoped_release release;
-                        dec->MergeBinaryFilesToPacketData(file_paths, merged_data, merged_size);
-                    }
-                    // GIL is re-acquired here for creating Python objects
-
-                    // Create numpy array from merged data
-                    auto capsule = py::capsule(merged_data.release(),
-                                               [](void* ptr) { delete[] static_cast<uint8_t*>(ptr); });
-                    py::array_t<uint8_t> numpy_data(merged_size, static_cast<uint8_t*>(capsule.get_pointer()),
-                                                    capsule);
-
-                    return numpy_data;
-                } catch (const std::exception& e) {
-                    throw std::runtime_error(e.what());
-                }
-            },
-            py::arg("file_paths"),
-            R"pbdoc(
-            Merges multiple binary packet files into a single numpy array.
-            
-            This method merges multiple binary packet files into a single contiguous
-            numpy array for efficient processing.
-            
-            Args:
-                file_paths: List of file paths to binary packet files
-            
-            Returns:
-                Numpy array containing merged packet data compatible with decode_from_packet
-            
-            Raises:
-                RuntimeError: If files cannot be read or merged
-                ValueError: If file_paths is empty
-
-            Example:
-                Ref to Sample: `samples/SampleDecodeFromGopFiles.py`
-
-            )pbdoc")
-        .def(
             "LoadGopsToList",
             [](std::shared_ptr<PyNvGopDecoder>& dec, const std::vector<std::string>& file_paths) {
                 try {
@@ -1027,24 +862,19 @@ void Init_PyNvGopDecoder(py::module& m) {
             This is the companion function to :meth:`GetGOPList`, enabling distributed GOP caching
             and selective loading workflows.
             
-            Key Differences from :meth:`LoadGops`:
-
-            - :meth:`LoadGops`: Merges all files into ONE numpy array (for use with :meth:`DecodeFromGOPRGB`)
-            - :meth:`LoadGopsToList`: Returns separate numpy arrays (for use with :meth:`DecodeFromGOPListRGB`)
-            
             Args:
                 file_paths: List of paths to GOP binary files to load
             
             Returns:
                 List of numpy arrays, each containing the GOP data from one file.
-                Each numpy array has the same format as returned by GetGOP/GetGOPList.
+                Each numpy array has the same format as one item returned by GetGOPList.
             
             Raises:
                 RuntimeError: If any file cannot be read or has invalid format
                 ValueError: If file_paths is empty or files have invalid GOP format
             
             Example:
-                Ref to Sample: `samples/SampleSeparationAccessGOPToListAPI.py`
+                Ref to Sample: `samples/SampleDecodeFromGopFilesToListAPI.py`
                 
                 >>> # Workflow 1: Save GOP data to separate files (from GetGOPList)
                 >>> decoder = PyNvGopDecoder(maxfiles=10)
@@ -1053,7 +883,7 @@ void Init_PyNvGopDecoder(py::module& m) {
                 ...     SavePacketsToFile(gop_data, f'gop_{i}.bin')
                 
                 >>> # Workflow 2: Load GOP data back and decode
-                >>> loaded_gop_list = decoder.LoadGopList(['gop_0.bin', 'gop_1.bin'])
+                >>> loaded_gop_list = decoder.LoadGopsToList(['gop_0.bin', 'gop_1.bin'])
                 >>> frames = decoder.DecodeFromGOPListRGB(
                 ...     loaded_gop_list, 
                 ...     ['v1.mp4', 'v2.mp4'],
@@ -1063,7 +893,7 @@ void Init_PyNvGopDecoder(py::module& m) {
                 
                 >>> # Workflow 3: Selective loading (only load needed videos)
                 >>> # Only load video 1's GOP data
-                >>> loaded_gop = decoder.LoadGopList(['gop_1.bin'])
+                >>> loaded_gop = decoder.LoadGopsToList(['gop_1.bin'])
                 >>> frames = decoder.DecodeFromGOPListRGB(
                 ...     loaded_gop,
                 ...     ['v2.mp4'],
@@ -1164,10 +994,10 @@ void Init_PyNvGopDecoder(py::module& m) {
             
             This method takes serialized packet data and extracts all the necessary parameters
             required for the :meth:`DecodeFromPacketListRGB` interface, including creating numpy arrays
-            for the packet binary data. You can use this method to get the parameters from :meth:`GetGOP`.
+            for the packet binary data.
             
             Args:
-                numpy_data: Numpy array containing serialized packet data from :meth:`GetGOP`
+                numpy_data: Numpy array containing serialized packet data from one :meth:`GetGOPList` result
             
             Returns:
                 Tuple containing
@@ -1189,73 +1019,6 @@ void Init_PyNvGopDecoder(py::module& m) {
             
             Example:
                 Ref to Sample: `samples/SampleDecodeFromBinaryData.py`
-            )pbdoc")
-        .def(
-            "MergePacketDataToOne",
-            [](std::shared_ptr<PyNvGopDecoder>& dec,
-               const std::vector<py::array_t<uint8_t>>& packet_data_arrays) {
-                try {
-                    // Validate input
-                    if (packet_data_arrays.empty()) {
-                        throw std::runtime_error("packet_data_arrays cannot be empty");
-                    }
-
-                    // Convert numpy arrays to C++ pointers and sizes (requires GIL)
-                    std::vector<uint8_t*> buffer_pointers;
-                    std::vector<size_t> buffer_sizes;
-
-                    buffer_pointers.reserve(packet_data_arrays.size());
-                    buffer_sizes.reserve(packet_data_arrays.size());
-
-                    for (const auto& numpy_array : packet_data_arrays) {
-                        buffer_pointers.push_back(
-                            const_cast<uint8_t*>(static_cast<const uint8_t*>(numpy_array.data())));
-                        buffer_sizes.push_back(numpy_array.size());
-                    }
-
-                    std::unique_ptr<uint8_t[]> merged_data;
-                    size_t merged_size;
-
-                    // Release GIL for memory operation
-                    {
-                        py::gil_scoped_release release;
-                        dec->MergePacketDataToOne(buffer_pointers, buffer_sizes, merged_data, merged_size);
-                    }
-                    // GIL is re-acquired here for creating Python objects
-
-                    // Create numpy array from merged data
-                    auto capsule = py::capsule(merged_data.release(),
-                                               [](void* ptr) { delete[] static_cast<uint8_t*>(ptr); });
-                    py::array_t<uint8_t> numpy_data(merged_size, static_cast<uint8_t*>(capsule.get_pointer()),
-                                                    capsule);
-
-                    return numpy_data;
-                } catch (const std::exception& e) {
-                    throw std::runtime_error(e.what());
-                }
-            },
-            py::arg("packet_data_arrays"),
-            R"pbdoc(
-            Merges multiple packet data arrays into a single numpy array.
-            
-            This method takes multiple numpy arrays containing SerializedPacketBundle data
-            and merges them into a single contiguous numpy array. This is useful for
-            combining packet data from different sources or files into one unified
-            data structure for processing.
-            
-            Args:
-                packet_data_arrays: List of numpy arrays, each containing SerializedPacketBundle data
-            
-            Returns:
-                Numpy array containing merged packet data
-            
-            Raises:
-                RuntimeError: If arrays cannot be merged
-                ValueError: If packet_data_arrays is empty
-            
-            Note:
-                This method is designed to work efficiently with large datasets and uses
-                parallel processing for optimal performance.
             )pbdoc")
         .def(
             "release_device_memory", [](std::shared_ptr<PyNvGopDecoder>& dec) { dec->ReleaseMemPools(); },

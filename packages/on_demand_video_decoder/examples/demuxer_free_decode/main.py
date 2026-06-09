@@ -171,19 +171,19 @@ class VideoClipDatasetDecodeOnly(Dataset):
             frame_indices = [frame_idx] * len(video_paths)
 
             if self.fix_gop_size > 0:
-                merged_numpy_data = self._storage.load_gops_fast(
+                gop_data_list = self._storage.load_gops_fast(
                     frame_indices, video_paths, self.fix_gop_size
                 )
             else:
-                merged_numpy_data = self._storage.load_gops(frame_indices, video_paths)
+                gop_data_list = self._storage.load_gops(frame_indices, video_paths)
 
-            if merged_numpy_data is None:
+            if gop_data_list is None:
                 logger.warning(f"Failed to load GOP packets for {clip_path} at frame {frame_idx}")
                 continue
 
             episode_buffers.append(
                 video_transforms.PacketOndemandBuffers(
-                    gop_packets=merged_numpy_data,
+                    gop_packets=gop_data_list,
                     target_frame_list=frame_indices,
                     target_file_list=video_paths,
                     use_cache=False,

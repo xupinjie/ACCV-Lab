@@ -235,7 +235,7 @@ class GOPStorageManager:
         Args:
             clip_name (str): Name of the clip (subdirectory)
             video_path (str): Path to the video file
-            packets_tuple: Tuple from GetGOP containing (numpy_data, first_frame_ids, gop_lens)
+            packets_tuple: Tuple from one GetGOPList item containing (numpy_data, first_frame_ids, gop_lens)
 
         Returns:
             bool: True if successful, False otherwise
@@ -283,7 +283,7 @@ class GOPStorageManager:
 
                     while True:
                         try:
-                            packets_tuple = self.nv_gop_demuxer.GetGOP([video_path], [frame_idx])
+                            packets_tuple = self.nv_gop_demuxer.GetGOPList([video_path], [frame_idx])[0]
                             numpy_data, first_frame_ids, gop_lens = packets_tuple
 
                             # Check if we've processed this GOP already
@@ -323,17 +323,17 @@ class GOPStorageManager:
     # .. doc-marker-end: gop-storage-store
 
     # .. doc-marker-begin: gop-storage-load
-    def load_gops(self, frame_ids: List[int], video_paths: List[str]) -> Optional[np.ndarray]:
+    def load_gops(self, frame_ids: List[int], video_paths: List[str]) -> Optional[List[np.ndarray]]:
         """
-        Load multiple GOPs for the specified frames and video paths using LoadGops.
+        Load multiple GOPs for the specified frames and video paths using LoadGopsToList.
 
         Args:
             frame_ids (List[int]): List of target frame indices
             video_paths (List[str]): List of video file paths
 
         Returns:
-            Optional[np.ndarray]: Combined numpy array compatible with DecodeFromGOP,
-                                 or None if any GOP is not found
+            Optional[List[np.ndarray]]: Per-video GOP arrays compatible with DecodeFromGOPListRGB,
+                                       or None if any GOP is not found
         """
         torch.cuda.nvtx.range_push("load_gops_manager")
 
@@ -362,11 +362,11 @@ class GOPStorageManager:
 
             gop_file_paths.append(gop_info.file_path)
 
-        # Use LoadGops to merge all GOP files
+        # Load one GOP array per video file.
         try:
-            merged_numpy_data = self.nv_gop_demuxer.LoadGops(gop_file_paths)
+            gop_data_list = self.nv_gop_demuxer.LoadGopsToList(gop_file_paths)
             torch.cuda.nvtx.range_pop()
-            return merged_numpy_data
+            return gop_data_list
         except Exception as e:
             print(f"Error loading GOPs: {e}")
             torch.cuda.nvtx.range_pop()
@@ -377,7 +377,7 @@ class GOPStorageManager:
     # .. doc-marker-begin: gop-storage-load-fast
     def load_gops_fast(
         self, frame_ids: List[int], video_paths: List[str], fix_gop_size: int
-    ) -> Optional[np.ndarray]:
+    ) -> Optional[List[np.ndarray]]:
         """
         Fast path to load multiple GOPs assuming a fixed GOP size in filenames.
 
@@ -391,8 +391,8 @@ class GOPStorageManager:
             fix_gop_size (int): Fixed GOP size used when storing, e.g., 30.
 
         Returns:
-            Optional[np.ndarray]: Combined numpy array compatible with DecodeFromGOP,
-                                  or None if any GOP file is not found.
+            Optional[List[np.ndarray]]: Per-video GOP arrays compatible with DecodeFromGOPListRGB,
+                                       or None if any GOP file is not found.
         """
         torch.cuda.nvtx.range_push("load_gops_fast_manager")
 
@@ -445,11 +445,11 @@ class GOPStorageManager:
                 torch.cuda.nvtx.range_pop()
                 return None
 
-        # Merge GOPs
+        # Load GOPs as a list.
         try:
-            merged_numpy_data = self.nv_gop_demuxer.LoadGops(gop_file_paths)
+            gop_data_list = self.nv_gop_demuxer.LoadGopsToList(gop_file_paths)
             torch.cuda.nvtx.range_pop()
-            return merged_numpy_data
+            return gop_data_list
         except Exception as e:
             print(f"Error loading GOPs (fast): {e}")
             torch.cuda.nvtx.range_pop()

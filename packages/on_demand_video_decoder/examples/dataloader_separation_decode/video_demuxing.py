@@ -24,7 +24,7 @@ import video_transforms
 
 @dataclass
 class SerializedPacketBundle:
-    data: np.ndarray
+    data: List[np.ndarray]
     first_frame_ids: List[int]
     gop_lens: List[int]
     filepaths: List[str]
@@ -108,9 +108,12 @@ class IndexingDemuxerOndemand:
         if use_cache == False:
             try:
                 nvtx.range_push("get_packets")
-                gop_packets, first_frame_ids, gop_lens = self._nv_gop_dec.GetGOP(
+                gop_list = self._nv_gop_dec.GetGOPList(
                     self._video_file_paths, frame_idx_list
                 )
+                gop_packets = [gop_data for gop_data, _, _ in gop_list]
+                first_frame_ids = [first_ids[0] for _, first_ids, _ in gop_list]
+                gop_lens = [lens[0] for _, _, lens in gop_list]
                 nvtx.range_pop()  # get_packets
 
                 nvtx.range_push("cache data")

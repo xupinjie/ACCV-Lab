@@ -16,8 +16,7 @@
 ``accvlab.on_demand_video_decoder`` - GOP Files List API Decoding Sample
 
 This sample demonstrates the ``LoadGopsToList`` API for per-video GOP file loading
-and batch decoding. Unlike ``LoadGops`` which merges all files into one bundle,
-``LoadGopsToList`` returns separate GOP data for each file, enabling:
+and batch decoding. ``LoadGopsToList`` returns separate GOP data for each file, enabling:
 
 - Per-video cache management and selective loading
 - Distributed storage and processing optimization
@@ -31,7 +30,6 @@ Key Features Demonstrated:
 - Selective video loading (load only needed videos)
 - GPU-accelerated hardware decoding
 - RGB/BGR format output options
-- Comparison with merged LoadGops approach
 """
 
 import os
@@ -50,9 +48,8 @@ def SampleDecodeFromGopFilesListAPI():
     3. Phase 3: Batch decode from GOP list
     4. Phase 4: Demonstrate selective loading (partial video set)
 
-    Key Differences from LoadGops:
-    - LoadGops: Merges all files → single bundle → DecodeFromGOPRGB
-    - LoadGopsToList: Keeps files separate → list of bundles → DecodeFromGOPListRGB
+    LoadGopsToList keeps each file's GOP data separate (a list of bundles), feeding
+    DecodeFromGOPListRGB for batch decoding.
 
     Benefits:
     - Load only needed videos from cache
@@ -131,10 +128,10 @@ def SampleDecodeFromGopFilesListAPI():
             for i in range(len(file_list)):
                 print(f"\n  📹 Video {i + 1}/{len(file_list)}: {camera_names[i]}")
 
-                # Extract packet data for single file
-                numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-                    file_list[i : i + 1], frames[i : i + 1]
-                )
+                # Extract packet data for single file (GetGOPList returns one bundle per
+                # file; we request a single file, so take the first bundle).
+                gop_bundles = nv_gop_dec1.GetGOPList(file_list[i : i + 1], frames[i : i + 1])
+                numpy_data, first_frame_ids, gop_lens = gop_bundles[0]
 
                 # Create unique filename for this video's GOP data
                 packet_file = f"./gop_list_{iteration:02d}_{camera_names[i]}.bin"
@@ -184,11 +181,7 @@ def SampleDecodeFromGopFilesListAPI():
 
         try:
             """
-            LoadGopsToList: Load GOP files as separate bundles
-
-            Key Difference from LoadGops:
-            - LoadGops → single merged numpy array
-            - LoadGopsToList → list of numpy arrays (one per file)
+            LoadGopsToList: Load GOP files as separate bundles.
 
             Returns:
             - List of numpy arrays, each containing one video's GOP data
@@ -280,40 +273,6 @@ def SampleDecodeFromGopFilesListAPI():
         print(f"   Error: {type(e).__name__}: {e}")
         return 1
 
-    # Phase 4: API Comparison
-    print("\n" + "=" * 80)
-    print("API COMPARISON: LoadGops vs LoadGopsToList")
-    print("=" * 80)
-
-    print("\n📌 LoadGops + DecodeFromGOPRGB (Merged Approach):")
-    print("   Usage:")
-    print("     merged_data = decoder.LoadGops(file_paths)")
-    print("     frames = decoder.DecodeFromGOPRGB(merged_data, videos, frame_ids)")
-    print("   Characteristics:")
-    print("     • Returns: Single merged numpy array")
-    print("     • Decoding: One call with all data")
-    print("     • Best for: Batch processing all videos together")
-    print("     • Memory: One large bundle")
-    print("     • Loading: All or nothing")
-
-    print("\n📌 LoadGopsToList + DecodeFromGOPListRGB (List Approach) ⭐:")
-    print("   Usage:")
-    print("     gop_list = decoder.LoadGopsToList(file_paths)")
-    print("     frames = decoder.DecodeFromGOPListRGB(gop_list, videos, frame_ids)")
-    print("   Characteristics:")
-    print("     • Returns: List of numpy arrays (one per video)")
-    print("     • Decoding: Batch decode from list")
-    print("     • Best for: Selective loading, distributed caching")
-    print("     • Memory: Individual bundles, load independently")
-    print("     • Loading: Can load subset of videos")
-
-    print("\n🎯 Use LoadGopsToList when:")
-    print("   ✓ Need to cache each video independently")
-    print("   ✓ Want selective video loading from cache")
-    print("   ✓ Distributed storage and processing")
-    print("   ✓ Per-video cache management (expiration, priority)")
-    print("   ✓ Large video collections (avoid loading all at once)")
-
     # Cleanup
     print("\n" + "=" * 80)
     print("CLEANUP")
@@ -342,7 +301,7 @@ if __name__ == "__main__":
     This sample demonstrates the LoadGopsToList + DecodeFromGOPListRGB workflow
     for per-video GOP management and selective loading capabilities.
 
-    Key Advantages Over LoadGops:
+    Key Advantages:
     - Per-video independence: Each video's GOP data is separate
     - Selective loading: Load only needed videos from storage
     - Memory efficiency: Don't load all videos if not needed
@@ -363,7 +322,6 @@ if __name__ == "__main__":
     2. Load GOP files as a list using LoadGopsToList
     3. Batch decode using DecodeFromGOPListRGB
     4. Demonstrate selective loading (load only needed videos)
-    5. Compare with LoadGops approach
     """
     exit_code = SampleDecodeFromGopFilesListAPI()
     exit(exit_code)

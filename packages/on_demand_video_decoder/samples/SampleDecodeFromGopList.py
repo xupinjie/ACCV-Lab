@@ -142,10 +142,11 @@ def SampleDecodeFromPacketsList():
                     f"  Worker {i+1}: Extracting packets for {os.path.basename(file_list[i])} (frame {frames[i]})"
                 )
 
-                # Extract packet data for single file and frame (simulating worker process)
-                numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-                    file_list[i : i + 1], frames[i : i + 1]
-                )
+                # Extract packet data for single file and frame (simulating worker process).
+                # GetGOPList returns one GOP bundle per file; we request a single file here, so
+                # we take the first (and only) bundle.
+                gop_bundles = nv_gop_dec1.GetGOPList(file_list[i : i + 1], frames[i : i + 1])
+                numpy_data, first_frame_ids, gop_lens = gop_bundles[0]
 
                 packets_list.append(numpy_data)
                 print(f"    Extracted packet data: {numpy_data.size} bytes")

@@ -214,17 +214,10 @@ class TestAllDecodingApisOnOverlapFrames:
 
     @pytest.mark.parametrize("fid", OVERLAP_FIDS)
     def test_getgop_decode_from_gop(self, decoder, fid):
-        """``GetGOP`` + ``DecodeFromGOP`` — merged-bundle YUV path."""
-        gop_data, _, _ = decoder.GetGOP([OPEN_GOP_SAMPLE], [fid])
+        """``GetGOPList`` + ``DecodeFromGOP`` — single-bundle YUV path."""
+        gop_data, _, _ = decoder.GetGOPList([OPEN_GOP_SAMPLE], [fid])[0]
         frames = decoder.DecodeFromGOP(gop_data, [OPEN_GOP_SAMPLE], [fid])
         self._assert_yuv_nv12(frames)
-
-    @pytest.mark.parametrize("fid", OVERLAP_FIDS)
-    def test_getgop_decode_from_gop_rgb(self, decoder, fid):
-        """``GetGOP`` + ``DecodeFromGOPRGB`` — merged-bundle RGB path."""
-        gop_data, _, _ = decoder.GetGOP([OPEN_GOP_SAMPLE], [fid])
-        frames = decoder.DecodeFromGOPRGB(gop_data, [OPEN_GOP_SAMPLE], [fid])
-        self._assert_rgb(frames)
 
     @pytest.mark.parametrize("fid", OVERLAP_FIDS)
     def test_getgoplist_decode_from_gop_list_rgb(self, decoder, fid):

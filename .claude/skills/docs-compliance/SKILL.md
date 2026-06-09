@@ -103,7 +103,7 @@ User-facing docs (`docs/`, `packages/*/docs/`, public-class docstrings) describe
 Bad (jargon / impl detail leaked to user):
   - put() acquires an flock for atomicity (double-check after acquiring the lock)
   - Returns the original decoder
-  - Uses C++ GetGOP under the hood
+  - Uses C++ GetGOPList under the hood
 
 Good:
   - put() acquires an flock for atomicity
