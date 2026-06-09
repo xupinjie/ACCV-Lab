@@ -116,11 +116,6 @@ class PyNvGopDecoder {
                                                      const std::vector<int> frame_ids,
                                                      const FastStreamInfo* fastStreamInfos = nullptr);
 
-    void decode_from_gop(const uint8_t* data, size_t size, const std::vector<std::string>& filepaths,
-                         const std::vector<int> frame_ids, bool convert_to_rgb, bool as_bgr,
-                         std::vector<DecodedFrameExt>* out_if_no_color_conversion,
-                         std::vector<RGBFrame>* out_if_color_converted);
-
     void decode_from_packet_list(std::vector<std::vector<int>> packets_bytes,
                                  std::vector<std::vector<int>> decode_idxs, std::vector<int> widths,
                                  std::vector<int> heights,

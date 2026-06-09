@@ -572,51 +572,6 @@ void Init_PyNvGopDecoder(py::module& m) {
                 ...     print(f"  GOP lengths: {gop_lens}")
             )pbdoc")
         .def(
-            "DecodeFromGOP",
-            [](std::shared_ptr<PyNvGopDecoder>& dec, const py::array_t<uint8_t>& numpy_data,
-               const std::vector<std::string>& filepaths, const std::vector<int> frame_ids) {
-                try {
-                    // Extract data pointer while holding GIL
-                    const uint8_t* data_ptr = static_cast<const uint8_t*>(numpy_data.data());
-                    size_t data_size = numpy_data.size();
-
-                    std::vector<DecodedFrameExt> result;
-                    // Release GIL for GPU decoding
-                    {
-                        py::gil_scoped_release release;
-                        dec->decode_from_gop(data_ptr, data_size, filepaths, frame_ids, false, false, &result,
-                                             nullptr);
-                    }
-                    return result;
-                } catch (const std::exception& e) {
-                    throw std::runtime_error(e.what());
-                }
-            },
-            py::arg("numpy_data"), py::arg("filepaths"), py::arg("frame_ids"),
-            R"pbdoc(
-            Decodes video GOP data into YUV frames without demuxing again.
-
-            This method decodes previously extracted GOP data into YUV frames. It's
-            useful for scenarios where you want to separate GOP extraction from
-            decoding, or when you have pre-extracted GOP data.
-            
-            Args:
-                numpy_data: Numpy array containing serialized GOP data from one :meth:`GetGOPList` result
-                filepaths: List of video file paths (for metadata purposes)
-                frame_ids: List of frame IDs to decode from the GOP data
-            
-            Returns:
-                List of DecodedFrameExt objects containing the decoded YUV frame data
-            
-            Raises:
-                RuntimeError: If GOP data is invalid or decoding fails
-                ValueError: If frame_ids don't match the GOP data
-            
-            Example:
-                >>> gop_data, first_ids, gop_lens = decoder.GetGOPList(['video.mp4'], [0])[0]
-                >>> frames = decoder.DecodeFromGOP(gop_data, ['video.mp4'], [0])
-            )pbdoc")
-        .def(
             "DecodeFromPacketListRGB",
             [](std::shared_ptr<PyNvGopDecoder>& dec,
                const std::vector<std::vector<py::array_t<uint8_t>>>& numpy_datas,

@@ -21,7 +21,7 @@ non-overlapping partition of the display-index space: every display frame
 belongs to exactly one GOP, and a leading picture is assigned to the
 previous GOP in display order, not to the GOP introduced by its associated
 IRAP. The same invariant is what lets ``SharedGopStore.lookup``,
-``CachedGopDecoder._is_cache_hit``, and ``DecodeFromGOP``'s range check
+``CachedGopDecoder._is_cache_hit``, and ``DecodeFromGOPList``'s range check
 resolve a frame to a unique GOP.
 
 Fixture: a 100-frame, 256x256, 5-GOP open-GOP HEVC clip
@@ -125,8 +125,8 @@ class TestGetGOPListPartition:
         _, first, glen = _get_gop(decoder, boundary_fid)
         assert (first, first + glen) == expected_gop
 
-    def test_decodefromgop_rejects_cross_gop_frame(self, decoder):
-        """``DecodeFromGOP`` raises when the requested frame lies outside the
+    def test_decodefromgoplist_rejects_cross_gop_frame(self, decoder):
+        """``DecodeFromGOPList`` raises when the requested frame lies outside the
         GOP's declared ``[first_frame_id, first_frame_id + gop_len)`` range,
         producing a clear API-boundary error instead of a downstream decode
         failure.
@@ -134,7 +134,7 @@ class TestGetGOPListPartition:
         # GOP-A covers [0, 20). Frame 25 lives in GOP-B and must be rejected.
         gop_a_data, _, _ = _get_gop(decoder, 10)
         with pytest.raises(Exception) as exc_info:
-            decoder.DecodeFromGOP(gop_a_data, [OPEN_GOP_SAMPLE], [25])
+            decoder.DecodeFromGOPList([gop_a_data], [OPEN_GOP_SAMPLE], [25])
         assert "GOP range" in str(exc_info.value) or "frame_id" in str(exc_info.value)
 
 
@@ -213,10 +213,10 @@ class TestAllDecodingApisOnOverlapFrames:
         self._assert_rgb(frames)
 
     @pytest.mark.parametrize("fid", OVERLAP_FIDS)
-    def test_getgop_decode_from_gop(self, decoder, fid):
-        """``GetGOPList`` + ``DecodeFromGOP`` — single-bundle YUV path."""
+    def test_getgoplist_decode_from_gop_list(self, decoder, fid):
+        """``GetGOPList`` + ``DecodeFromGOPList`` — single-bundle YUV path."""
         gop_data, _, _ = decoder.GetGOPList([OPEN_GOP_SAMPLE], [fid])[0]
-        frames = decoder.DecodeFromGOP(gop_data, [OPEN_GOP_SAMPLE], [fid])
+        frames = decoder.DecodeFromGOPList([gop_data], [OPEN_GOP_SAMPLE], [fid])
         self._assert_yuv_nv12(frames)
 
     @pytest.mark.parametrize("fid", OVERLAP_FIDS)

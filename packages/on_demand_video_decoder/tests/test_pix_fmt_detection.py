@@ -19,9 +19,9 @@ Regression target: a previously-shipped patent-free FFmpeg build cannot populate
 `AVCodecParameters::format` for HEVC / H.264 streams (no decoder is linked in to
 probe the SPS), and the demuxer silently fell back to 8-bit yuv420p. For a real
 10-bit HEVC stream this mis-sized the GPU output buffer by a factor of 2 and
-crashed `DecodeFromGOP` with `CUDA_ERROR_INVALID_VALUE`.
+crashed `DecodeFromGOPList` with `CUDA_ERROR_INVALID_VALUE`.
 
-These tests drive `GetGOPList` + `DecodeFromGOP` over the matrix of stream
+These tests drive `GetGOPList` + `DecodeFromGOPList` over the matrix of stream
 shapes the package supports on NVDEC (HEVC at both 8-bit and 10-bit with both
 hev1 and hvc1 sample-entry tags, plus H.264 8-bit), and assert the decoded
 planes carry the dtype implied by the stream's real bit-depth (uint8 for
@@ -65,7 +65,7 @@ def _video_path(name):
     ids=[v[0] for v in VARIANTS],
 )
 def test_decode_from_gop_round_trip(filename, codec_tag, bit_depth, expected_dtype):
-    """End-to-end: GetGOPList -> DecodeFromGOP must produce a plane of the
+    """End-to-end: GetGOPList -> DecodeFromGOPList must produce a plane of the
     correct dtype for the stream's actual bit-depth."""
     path = _video_path(filename)
 
@@ -79,7 +79,7 @@ def test_decode_from_gop_round_trip(filename, codec_tag, bit_depth, expected_dty
     assert first_ids == [0], f"unexpected first_ids={first_ids} for {filename}"
     assert gop_lens and gop_lens[0] > 0, f"unexpected gop_lens={gop_lens} for {filename}"
 
-    frames = decoder.DecodeFromGOP(gop_data, [path], [0])
+    frames = decoder.DecodeFromGOPList([gop_data], [path], [0])
     assert len(frames) == 1, f"expected 1 frame, got {len(frames)} for {filename}"
 
     planes = frames[0].cuda()
@@ -106,7 +106,7 @@ def test_decode_from_gop_round_trip(filename, codec_tag, bit_depth, expected_dty
 )
 def test_decode_does_not_raise_invalid_value(filename, codec_tag, bit_depth, expected_dtype):
     """Focused regression: the specific failure mode we fixed was
-    `CUDA_ERROR_INVALID_VALUE` thrown from DecodeFromGOP because the GPU buffer
+    `CUDA_ERROR_INVALID_VALUE` thrown from DecodeFromGOPList because the GPU buffer
     was half the size NVDEC writes. Reproduce the exact call sequence the
     customer used and assert it does not raise that error."""
     path = _video_path(filename)
@@ -116,5 +116,5 @@ def test_decode_does_not_raise_invalid_value(filename, codec_tag, bit_depth, exp
     gop_data, _, _ = demuxer.GetGOPList([path], [0], useGOPCache=True)[0]
     # No prior RGB call to "prime" the GPU pool — exercise the raw YUV path
     # directly, which was the broken path before the SPS fallback.
-    frames = decoder.DecodeFromGOP(gop_data, [path], [0])
-    assert frames, f"DecodeFromGOP returned no frames for {filename}"
+    frames = decoder.DecodeFromGOPList([gop_data], [path], [0])
+    assert frames, f"DecodeFromGOPList returned no frames for {filename}"
