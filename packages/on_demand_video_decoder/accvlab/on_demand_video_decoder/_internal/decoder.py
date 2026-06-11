@@ -19,7 +19,8 @@ This module provides the CachedGopDecoder class and CreateGopDecoder factory fun
 for video GOP extraction with transparent caching functionality.
 """
 
-from typing import List, Tuple, Any
+from collections import OrderedDict
+from typing import List, Tuple, Any, Optional
 import numpy as np
 
 from .. import _CreateGopDecoderCpp, PyNvGopDecoder
@@ -58,7 +59,7 @@ class CachedGopDecoder:
         :class:`PyNvGopDecoder`: The underlying decoder class with full method documentation
     """
 
-    def __init__(self, decoder: PyNvGopDecoder, *, _key=None) -> None:
+    def __init__(self, decoder: PyNvGopDecoder, cache_capacity: int, *, _key=None) -> None:
         """
         Initialize the cached GOP decoder.
 
@@ -76,9 +77,16 @@ class CachedGopDecoder:
             raise RuntimeError(
                 "CachedGopDecoder cannot be instantiated directly. " "Use CreateGopDecoder() instead."
             )
+        if isinstance(cache_capacity, bool) or not isinstance(cache_capacity, int):
+            raise TypeError("cache_capacity must be a positive integer")
+        if cache_capacity < 1:
+            raise ValueError("cache_capacity must be positive")
         self._decoder = decoder
-        # Cache structure: {filepath: (packets_numpy, first_frame_id, gop_len)}
-        self._gop_cache = {}
+        # Cache structure: {filepath: (packets_numpy, first_frame_id, gop_len)}.
+        # Each filepath stores only one GOP. The OrderedDict keeps LRU order and
+        # is bounded by gopCacheCapacity from CreateGopDecoder().
+        self._gop_cache = OrderedDict()
+        self._cache_capacity = cache_capacity
         # Track cache hit status for each file in the last GetGOP call
         self._last_cache_hits = []
 
@@ -93,10 +101,20 @@ class CachedGopDecoder:
         Returns:
             True if cache hit (frame_id is within cached GOP range), False otherwise
         """
-        if filepath not in self._gop_cache:
+        entry = self._gop_cache.get(filepath)
+        if entry is None:
             return False
-        _, first_frame_id, gop_len = self._gop_cache[filepath]
-        return first_frame_id <= frame_id < first_frame_id + gop_len
+        _, first_frame_id, gop_len = entry
+        hit = first_frame_id <= frame_id < first_frame_id + gop_len
+        if hit:
+            self._gop_cache.move_to_end(filepath)
+        return hit
+
+    def _update_cache(self, filepath: str, packets: np.ndarray, first_frame_id: int, gop_len: int) -> None:
+        self._gop_cache[filepath] = (packets, first_frame_id, gop_len)
+        self._gop_cache.move_to_end(filepath)
+        while len(self._gop_cache) > self._cache_capacity:
+            self._gop_cache.popitem(last=False)
 
     def GetGOP(
         self,
@@ -153,7 +171,7 @@ class CachedGopDecoder:
         for filepath, (packets, first_frame_ids, gop_lens) in zip(filepaths, results):
             # Each result contains data for a single file
             # first_frame_ids and gop_lens are lists with single element
-            self._gop_cache[filepath] = (packets, first_frame_ids[0], gop_lens[0])
+            self._update_cache(filepath, packets, first_frame_ids[0], gop_lens[0])
 
         # Merge and return in GetGOP format
         return self._merge_cached_data(filepaths)
@@ -213,13 +231,17 @@ class CachedGopDecoder:
         Returns:
             Dictionary with cache statistics and per-file information
         """
-        info = {"cached_files_count": len(self._gop_cache), "cached_files": {}}
+        info = {
+            "cache_capacity": self._cache_capacity,
+            "cached_files_count": len(self._gop_cache),
+            "cached_files": {},
+        }
         for filepath, (packets, first_fid, gop_len) in self._gop_cache.items():
             info["cached_files"][filepath] = {
                 "first_frame_id": first_fid,
                 "gop_len": gop_len,
                 "frame_range": (first_fid, first_fid + gop_len - 1),
-                "packets_size_bytes": packets.nbytes if hasattr(packets, 'nbytes') else len(packets),
+                "packets_size_bytes": packets.nbytes if hasattr(packets, "nbytes") else len(packets),
             }
         return info
 
@@ -317,7 +339,7 @@ class CachedGopDecoder:
                 filepath = filepaths[idx]
                 # Each result contains data for a single file
                 # first_frame_ids_list and gop_lens_list are lists with single element
-                self._gop_cache[filepath] = (packets, first_frame_ids_list[0], gop_lens_list[0])
+                self._update_cache(filepath, packets, first_frame_ids_list[0], gop_lens_list[0])
 
         # Build results from cache in original order
         results = []
@@ -345,7 +367,10 @@ class CachedGopDecoder:
 
 
 def CreateGopDecoder(
-    maxfiles: int, iGpu: int = 0, suppressNoColorRangeWarning: bool = False
+    maxfiles: int,
+    iGpu: int = 0,
+    suppressNoColorRangeWarning: bool = False,
+    gopCacheCapacity: Optional[int] = None,
 ) -> CachedGopDecoder:
     """
     Initialize GOP decoder with set of particular parameters.
@@ -358,6 +383,11 @@ def CreateGopDecoder(
         iGpu: GPU device ID to use for decoding (0 for primary GPU)
         suppressNoColorRangeWarning: Suppress warning when no color range can be
                                      extracted from video files (limited/MPEG range is assumed)
+        gopCacheCapacity: Maximum number of filepath entries kept in the Python GOP cache.
+                          ``None`` defaults to ``maxfiles``. This capacity only affects
+                          calls with ``useGOPCache=True``; each filepath stores the most
+                          recently requested GOP packet bundle, and least recently used
+                          filepaths are evicted when the limit is exceeded.
 
     Returns:
         :class:`CachedGopDecoder` instance configured with the specified parameters
@@ -372,5 +402,12 @@ def CreateGopDecoder(
         >>> # Subsequent calls with frame_id in same GOP return cached data
         >>> packets, fids, glens = decoder.GetGOP(['v0.mp4'], [15], useGOPCache=True)
     """
+    if gopCacheCapacity is None:
+        cache_capacity = maxfiles
+    else:
+        if isinstance(gopCacheCapacity, bool) or not isinstance(gopCacheCapacity, int):
+            raise TypeError("gopCacheCapacity must be a positive integer or None")
+        cache_capacity = gopCacheCapacity
+
     cpp_decoder = _CreateGopDecoderCpp(maxfiles, iGpu, suppressNoColorRangeWarning)
-    return CachedGopDecoder(cpp_decoder, _key=_CREATION_KEY)
+    return CachedGopDecoder(cpp_decoder, cache_capacity, _key=_CREATION_KEY)

@@ -1058,8 +1058,9 @@ print(decoder.isCacheHit())  # [True]
 ```
 
 > **⚠️ Note**: The cache is stored in Python memory. Each video file caches only one GOP (the most 
-> recently accessed). For long-running processes with many different videos, use {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.clear_cache` to 
-> release memory when needed.
+> recently accessed). The cache uses LRU eviction and is bounded by `gopCacheCapacity` in
+> {py:func}`~accvlab.on_demand_video_decoder.CreateGopDecoder`; when omitted, it defaults to `maxfiles`.
+> Use {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.clear_cache` to release memory manually.
 
 **When to Use GOP Caching**
 
