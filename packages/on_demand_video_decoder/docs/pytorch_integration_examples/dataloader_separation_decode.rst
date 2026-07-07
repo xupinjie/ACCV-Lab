@@ -104,7 +104,7 @@ The ``VideoClipDatasetWithPyNVVideo`` class extends PyTorch's ``Dataset`` and pr
 
   - ``demux_mode``: Separation mode decouples demuxing (CPU workers) from decoding (GPU main process)
   - ``device``: GPU device ID for decoding
-  - ``packet_cache``: Caches GOP packets in main process to avoid IPC overhead
+  - ``packet_cache``: Caches serialized GOP bundles in main process to avoid IPC overhead
 
 **Implementation:**
 
@@ -184,7 +184,7 @@ Performance Optimization Tips
 - **Worker Processes**: Adjust ``num_workers`` based on CPU cores and I/O requirements
 - **Stream Access Advantage**: Separation decoder efficiently handles stream frame access through packet caching
 - **GOP Size Impact**: Smaller GOP sizes improve random access performance (less decoding overhead per frame)
-- **Packet Cache**: GOP packets are cached in the main process, avoiding memory IPC overhead between workers
+- **Packet Cache**: Serialized GOP bundles are cached in the main process, avoiding memory IPC overhead between workers
 - **Memory Efficiency**: No GPU context duplication across workers, all decoding happens in main process
 
 Performance Profiling

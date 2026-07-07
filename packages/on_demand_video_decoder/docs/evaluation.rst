@@ -161,7 +161,7 @@ Setup
 
 For the video training, the demuxer-free approach is used (see
 :doc:`pytorch_integration_examples/dataloader_demuxer_free_decode` for details on this approach). Here, the
-GOP packets are extracted and stored prior to the training.
+Serialized GOP bundles are extracted and stored prior to the training.
 
 In the video training, the frames are decoded in the training process, and consequently, pre-processing is
 performed in the training process on the GPU. Note that this is not a viable optimization for the image-based

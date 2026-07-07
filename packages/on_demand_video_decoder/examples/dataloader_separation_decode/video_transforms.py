@@ -101,9 +101,9 @@ def opencv_decode_bgr(enc_file_paths, frame_ids):
 
 
 class PacketOndemandBuffers(typing.NamedTuple):
-    """List of GOP (Group of Pictures) packets. This contains packets for the GOP structure."""
+    """Per-video GOP packet buffers for on-demand decoding."""
 
-    gop_packets: np.ndarray
+    gop_packets: List[np.ndarray]
     """List of target frame indices."""
     target_frame_list: List[int]
     """List of target file paths."""
@@ -204,45 +204,31 @@ class DecodeVideoOnDemand:
                 use_cache = packet_buffer.use_cache
                 sample_idx = packet_buffer.sample_idx
 
-                # print(use_cache, sample_idx)
                 if use_cache:
-                    gop_packets = self._cached_packet_data[sample_idx]
+                    gop_packets_list = self._cached_packet_data[sample_idx]
                 else:
-                    gop_packets = packet_buffer.gop_packets
-                    self._cached_packet_data[sample_idx] = gop_packets
+                    gop_packets_list = packet_buffer.gop_packets
+                    self._cached_packet_data[sample_idx] = gop_packets_list
 
-                packet_data_arrays.append(gop_packets)
+                packet_data_arrays.extend(gop_packets_list)
                 all_target_file_list.extend(packet_buffer.target_file_list)
                 all_target_frame_list.extend(packet_buffer.target_frame_list)
 
-        # Merge all packet data using MergePacketDataToOne
-        try:
-            merged_packets = self._nv_gop_dec.MergePacketDataToOne(packet_data_arrays)
-        except Exception as e:
-            print(f"Error merging packet data: {e}")
-            print(f"Number of packet arrays: {len(packet_data_arrays)}")
-            for i, arr in enumerate(packet_data_arrays):
-                print(f"  Array {i} size: {len(arr)} bytes")
-            raise
-
         nvtx.range_pop()  # merge_packet_data
 
-        # Decode the merged packet data
-        nvtx.range_push("decode_merged_frames")
+        nvtx.range_push("decode_frames")
         try:
-            decoded_frames = self._nv_gop_dec.DecodeFromGOPRGB(
-                merged_packets, all_target_file_list, all_target_frame_list, True  # RGB
+            decoded_frames = self._nv_gop_dec.DecodeFromGOPListRGB(
+                packet_data_arrays, all_target_file_list, all_target_frame_list, True  # RGB
             )
-            # print(all_target_file_list)
-            # print(all_target_frame_list)
         except Exception as e:
-            print(f"Error decoding merged packets: {e}")
-            print(f"merged_packets size: {len(merged_packets)}")
+            print(f"Error decoding packets: {e}")
+            print(f"Number of GOP arrays: {len(packet_data_arrays)}")
             print(f"all_target_file_list: {all_target_file_list}")
             print(f"all_target_frame_list: {all_target_frame_list}")
             raise
 
-        nvtx.range_pop()  # decode_merged_frames
+        nvtx.range_pop()  # decode_frames
 
         # Convert to tensors and split back into individual samples
         nvtx.range_push("convert")
@@ -284,21 +270,20 @@ class DecodeVideoOnDemand:
         target_frame_list = episode_packet_buffer.target_frame_list
 
         if use_cache:
-            gop_packets = self._cached_packet_data[sample_idx]
+            gop_packets_list = self._cached_packet_data[sample_idx]
         else:
-
-            gop_packets = episode_packet_buffer.gop_packets
-            self._cached_packet_data[sample_idx] = gop_packets
+            gop_packets_list = episode_packet_buffer.gop_packets
+            self._cached_packet_data[sample_idx] = gop_packets_list
         nvtx.range_pop()  # load_packets
 
         nvtx.range_push("decode_frames")
         try:
-            decoded_frames = self._nv_gop_dec.DecodeFromGOPRGB(
-                gop_packets, target_file_list, target_frame_list, True  # RGB
+            decoded_frames = self._nv_gop_dec.DecodeFromGOPListRGB(
+                gop_packets_list, target_file_list, target_frame_list, True  # RGB
             )
         except Exception as e:
             print(f"Error decoding packets: {e}")
-            print(f"gop_packets: {gop_packets}")
+            print(f"Number of GOP arrays: {len(gop_packets_list)}")
             exit(1)
         nvtx.range_pop()  # decode_frames
 

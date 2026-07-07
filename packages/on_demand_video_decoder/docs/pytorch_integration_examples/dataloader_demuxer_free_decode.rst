@@ -12,30 +12,30 @@ The specific code implementation can be found in ``packages/on_demand_video_deco
 .. image:: ../images/demuxer_free_access.png
    :alt: Demuxer-Free Decode Optimazation Overview
 
-The "demuxer-free" approach refers to pre-extracting and storing GOP (Group of Pictures) packets offline, enabling:
+The "demuxer-free" approach refers to pre-extracting and storing serialized GOP (Group of Pictures) bundles offline, enabling:
 
-- **Zero Demuxing Overhead**: All demuxing work is performed once during preprocessing; runtime only loads and decodes GOP packets
+- **Zero Demuxing Overhead**: All demuxing work is performed once during preprocessing; runtime only loads and decodes the stored GOP bundles
 - **Maximum Throughput**: Eliminates CPU demuxing bottleneck for higher decode performance
-- **Reusable Dataset**: GOP packets are stored persistently and can be reused across multiple training runs
+- **Reusable Dataset**: GOP bundles are stored persistently and can be reused across multiple training runs
 - **Fast Random Access**: Pre-computed GOP indices enable instant frame-to-GOP lookup
 
 The workflow consists of two phases:
 
-1. **Preprocessing Phase (Offline)**: Extract and store GOP packets from all videos
-2. **Training Phase (online)**: Load pre-stored GOP packets and decode them directly on GPU
+1. **Preprocessing Phase (Offline)**: Extract and store serialized GOP bundles from all videos
+2. **Training Phase (online)**: Load pre-stored GOP bundles and decode them directly on GPU
 
 Key Features
 ============
 
-- **Demuxer-Free Pipeline**: Eliminates runtime demuxing by pre-storing GOP packets in binary format
+- **Demuxer-Free Pipeline**: Eliminates runtime demuxing by pre-storing serialized GOP bundles in binary format
 - **Persistent GOP Index**: Uses ``.gop_index.json`` files for instant frame-to-GOP mapping without directory scans
 - **Fixed GOP Optimization**: Optional ``--fix_gop_size`` enables fast-path computation for constant GOP size datasets
 - **Custom PyTorch Dataset**: Implements lazy initialization of GOP storage manager for memory-efficient loading
 - **Custom Sampler**: Organizes video clips into batches for efficient processing with distributed training support
-- **Multi-camera Support**: Handles synchronized frames from multiple cameras with pre-cached GOP packets
+- **Multi-camera Support**: Handles synchronized frames from multiple cameras with pre-cached GOP bundles
 - **Distributed Training**: Compatible with PyTorch's distributed training framework
 - **Performance Profiling**: Includes NVTX markers for performance analysis
-- **Storage Flexibility**: Supports both local and network storage for GOP packet files
+- **Storage Flexibility**: Supports both local and network storage for GOP bundle files
 
 Index Data Format
 =================
@@ -111,22 +111,22 @@ Data Loading Structure
 
 Key differences from online demuxing:
 
-- **Preprocessing**: GOP packets are extracted once and stored as ``.bin`` files
+- **Preprocessing**: Serialized GOP bundles are extracted once and stored as ``.bin`` files
 - **Runtime**: Only file I/O and GPU decoding, no demuxing overhead
 - **Random Access (Optional)**: Frame-to-GOP mapping is pre-computed in ``.gop_index.json``.
 
 Usage
 =====
 
-Step 1: Precompute and Store GOP Packets
+Step 1: Precompute and Store GOP Bundles
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Before training, you need to extract and store GOP packets from your video dataset.
+Before training, you need to extract and store serialized GOP bundles from your video dataset.
 
 Edit the configuration paths in ``examples/demuxer_free_decode/main_store_gops.py``:
 
 - ``VIDEO_BASE_PATH``: Directory containing your original video files
-- ``GOP_BASE_PATH``: Directory where GOP packets will be stored
+- ``GOP_BASE_PATH``: Directory where GOP bundles will be stored
 
 Then run the preprocessing script:
 
@@ -147,13 +147,13 @@ Then run the preprocessing script:
 This preprocessing step will:
 
 1. Recursively scan ``VIDEO_BASE_PATH`` for all ``.mp4`` files
-2. Extract GOP packets from each video
-3. Store packets as ``gop.{start_frame}.{frame_count}.bin`` files under ``GOP_BASE_PATH``
+2. Extract serialized GOP bundles from each video
+3. Store the bundles as ``gop.{start_frame}.{frame_count}.bin`` files under ``GOP_BASE_PATH``
 4. Generate ``.gop_index.json`` for each video to enable fast frame-to-GOP lookup
 
 .. note::
 
-   This is a one-time operation per dataset. The stored GOP packets can be reused across multiple training 
+   This is a one-time operation per dataset. The stored GOP bundles can be reused across multiple training 
    runs.
 
 Step 2: Training with Demuxer-Free Pipeline
@@ -208,7 +208,7 @@ Command Line Arguments
 - ``--group_num``: Number of clips to process in each batch (default: 4)
 - ``--num_workers``: Number of worker processes for data loading (default: 2)
 - ``--video_base_path``: Base directory of the original videos (used to derive relative GOP storage paths)
-- ``--gop_base_path``: Base directory containing stored GOP packet files
+- ``--gop_base_path``: Base directory containing stored GOP bundle files
 - ``--use_persistent_index``: Use ``.gop_index.json`` files for faster lookup (default: True)
 - ``--fix_gop_size``: Fixed GOP size for fast-path optimization (e.g., 30). If > 0, computes filenames directly without scanning
 
@@ -218,7 +218,7 @@ Architecture
 GOPStorageManager
 ^^^^^^^^^^^^^^^^^
 
-The ``GOPStorageManager`` class handles all GOP packet storage and retrieval operations.
+The ``GOPStorageManager`` class handles all GOP bundle storage and retrieval operations.
 
 **Initialization:**
 
@@ -232,7 +232,7 @@ The ``GOPStorageManager`` class handles all GOP packet storage and retrieval ope
 
 **store_gops() - Preprocessing Method:**
 
-Extracts GOP packets from all ``.mp4`` files under ``video_base_path``, saves each GOP as ``gop.{start_frame}.{frame_count}.bin``, and generates ``.gop_index.json`` for fast frame-to-GOP mapping.
+Extracts serialized GOP bundles from all ``.mp4`` files under ``video_base_path``, saves each GOP as ``gop.{start_frame}.{frame_count}.bin``, and generates ``.gop_index.json`` for fast frame-to-GOP mapping.
 
 .. note-literalinclude:: ../../examples/demuxer_free_decode/gop_storage.py
    :language: python
@@ -244,7 +244,7 @@ Extracts GOP packets from all ``.mp4`` files under ``video_base_path``, saves ea
 
 **load_gops() - Runtime Method:**
 
-Loads required GOP packets by consulting the persistent index, returns merged GOP data via ``LoadGops`` for GPU decoding, and supports variable GOP sizes within a video.
+Loads the required GOP bundles by consulting the persistent index, returns a list of serialized GOP bundles via :meth:`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList` for GPU decoding, and supports variable GOP sizes within a video.
 
 .. note-literalinclude:: ../../examples/demuxer_free_decode/gop_storage.py
    :language: python
@@ -272,8 +272,8 @@ VideoClipDatasetDecodeOnly
 The ``VideoClipDatasetDecodeOnly`` class extends PyTorch's ``Dataset`` and provides:
 
 - Lazy initialization of ``GOPStorageManager`` for memory efficiency
-- Returns ``PacketOndemandBuffers`` containing pre-loaded GOP packets for each batch item
-- Multi-camera frame synchronization with pre-cached GOP packets
+- Returns ``PacketOndemandBuffers`` containing pre-loaded GOP bundles for each batch item
+- Multi-camera frame synchronization with pre-cached GOP bundles
 - Error handling and validation
 - Compatible with decoders from ``video_transforms.py``
 
@@ -338,7 +338,7 @@ configuration    stream access    random access
 Optimization Tips
 ^^^^^^^^^^^^^^^^^
 
-- **CPU Efficiency**: Demuxing overhead is completely eliminated; workers only perform filesystem I/O and GOP packet loading
+- **CPU Efficiency**: Demuxing overhead is completely eliminated; workers only perform filesystem I/O and GOP bundle loading
 - **GPU Memory**: Only the main process requires GPU resources for decoding; adjust ``group_num`` based on available GPU memory
 - **Persistent Index**: Keep ``--use_persistent_index`` enabled for large datasets to avoid directory scans at runtime
 - **Fixed GOP Fast Path**: Use ``--fix_gop_size`` when your dataset has constant GOP size for maximum throughput

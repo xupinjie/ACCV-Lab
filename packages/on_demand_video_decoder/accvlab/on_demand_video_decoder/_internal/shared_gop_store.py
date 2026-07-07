@@ -15,7 +15,7 @@
 """
 SharedGopStore: Cross-process shared GOP store backed by POSIX SharedMemory.
 
-Workers :meth:`SharedGopStore.put` GOP packet data and pass lightweight
+Workers :meth:`SharedGopStore.put` serialized GOP bundles and pass lightweight
 :class:`GopRef` references through the DataLoader IPC queue.  The main
 process calls :meth:`SharedGopStore.get_batch` to read references as
 zero-copy numpy views.
@@ -98,7 +98,7 @@ def _hash_video_path(video_path: str) -> np.uint64:
 class SharedGopStore:
     """Cross-process shared GOP store backed by POSIX SharedMemory.
 
-    Stores GOP packet data in per-GOP SharedMemory blocks.  A small
+    Stores serialized GOP bundles in per-GOP SharedMemory blocks.  A small
     SharedMemory block holds the metadata table (index).  File-based
     locking (``flock``) provides cross-process safety under ``spawn`` mode.
 
@@ -255,7 +255,7 @@ class SharedGopStore:
         return None
 
     def put(self, video_path: str, first_frame_id: int, gop_len: int, data: np.ndarray) -> GopRef:
-        """Store GOP packet data and return a :class:`GopRef`.
+        """Store a serialized GOP bundle and return a :class:`GopRef`.
 
         Holds ``flock`` during eviction + insertion to guarantee atomicity.
         Performs a double-check after acquiring the lock (another worker
@@ -320,7 +320,7 @@ class SharedGopStore:
     # ------------------------------------------------------------------ #
 
     def read(self, ref: GopRef) -> np.ndarray:
-        """Zero-copy uint8 numpy view of GOP data in shared memory.
+        """Zero-copy uint8 numpy view of the serialized GOP bundle in shared memory.
 
         Caches ``SharedMemory`` handles per-process to avoid repeated
         ``shm_open()`` system calls.

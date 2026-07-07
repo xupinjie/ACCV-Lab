@@ -24,6 +24,14 @@ import utils
 import accvlab.on_demand_video_decoder as nvc
 
 
+def test_pynvsamplereader_rejects_direct_construction():
+    """PyNvSampleReader must be created via CreateSampleReader; direct construction raises."""
+    with pytest.raises(TypeError):
+        nvc.PyNvSampleReader()
+    with pytest.raises(TypeError):
+        nvc.PyNvSampleReader(1, 1)
+
+
 def test_stream_access_single():
     max_num_files_to_use = 6
     iter_num = 10

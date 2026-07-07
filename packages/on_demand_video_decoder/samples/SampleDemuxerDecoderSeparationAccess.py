@@ -13,12 +13,12 @@
 # limitations under the License.
 
 """
-``accvlab.on_demand_video_decoder`` - Separation Access with GetGOPList API Sample
+``accvlab.on_demand_video_decoder`` - Demuxer/Decoder Separation Access Sample
 
-This advanced sample demonstrates the GetGOPList API capability of ``accvlab.on_demand_video_decoder``,
-which extends the Separation Access architecture by providing per-video GOP data extraction.
-Unlike GetGOP which merges all video data into a single bundle, GetGOPList returns separate
-GOP data for each video, enabling more granular control and optimized caching strategies.
+This sample demonstrates the GetGOPList API of ``accvlab.on_demand_video_decoder``,
+which separates demuxing and decoding into two stages with per-video GOP data
+extraction. GetGOPList returns separate GOP data for each video, enabling
+granular control and optimized caching strategies.
 
 Key Features Demonstrated:
 - Per-video GOP data extraction with GetGOPList
@@ -27,10 +27,6 @@ Key Features Demonstrated:
 - Distributed processing and storage optimization
 - Two-stage video processing with enhanced granularity control
 - Enable per-video caching, partial loading, and parallel processing
-
-Comparison with GetGOP:
-- GetGOP: Merges all videos into one bundle → suitable for batch processing
-- GetGOPList: Separate bundle per video → suitable for distributed caching and selective loading
 """
 
 import os
@@ -40,7 +36,7 @@ import torch
 import accvlab.on_demand_video_decoder as nvc
 
 
-def SampleSeparationAccessGOPListAPI():
+def SampleDemuxerDecoderSeparationAccess():
     """
     Demonstrate separation access video decoding using GetGOPList API.
 
@@ -104,7 +100,7 @@ def SampleSeparationAccessGOPListAPI():
     print(f"Target frame: 77 for all videos")
 
     '''
-    GetGOPList performs per-video GOP extraction (unlike GetGOP which merges all)
+    GetGOPList performs per-video GOP extraction
     
     Parameters:
     - filepaths: List of video file paths to process
@@ -116,10 +112,7 @@ def SampleSeparationAccessGOPListAPI():
     
     Returns:
     - List of tuples, one per video: (gop_data, first_frame_ids, gop_lens)
-    
-    Key Difference from GetGOP:
-    - GetGOP: Returns single merged bundle → (merged_data, merged_first_ids, merged_gop_lens)
-    - GetGOPList: Returns list of separate bundles → [(data1, ids1, lens1), (data2, ids2, lens2), ...]
+      i.e. [(data1, ids1, lens1), (data2, ids2, lens2), ...]
     
     Cache hit condition: first_frame_id <= frame_id < first_frame_id + gop_len
     
@@ -286,58 +279,6 @@ def SampleSeparationAccessGOPListAPI():
     print("=" * 80)
 
 
-def CompareGetGOPvsGetGOPList():
-    """
-    Demonstrate the difference between GetGOP and GetGOPList APIs.
-
-    This comparison helps understand when to use each API:
-    - GetGOP: Best for batch processing where all videos are processed together
-    - GetGOPList: Best for scenarios requiring per-video control and caching
-    """
-
-    print("\n" + "=" * 80)
-    print("API COMPARISON: GetGOP vs GetGOPList")
-    print("=" * 80)
-
-    print("\n📌 GetGOP + DecodeFromGOPRGB (Merged Approach):")
-    print("   Usage:")
-    print("     merged_data, first_ids, gop_lens = decoder.GetGOP(files, frame_ids)")
-    print("     frames = decoder.DecodeFromGOPRGB(merged_data, files, frame_ids)")
-    print("   Characteristics:")
-    print("     • Returns: Single merged GOP bundle for all videos")
-    print("     • Decoding: One call with merged bundle")
-    print("     • Best for: Batch processing, when all videos processed together")
-    print("     • Memory: One large bundle in memory")
-    print("     • Caching: Single cache entry for all videos")
-
-    print("\n📌 GetGOPList + DecodeFromGOPListRGB (Per-Video Approach):")
-    print("   Usage:")
-    print("     gop_list = decoder.GetGOPList(files, frame_ids)")
-    print("     # gop_list = [(data1, ids1, lens1), (data2, ids2, lens2), ...]")
-    print("     gop_data_list = [data for data, _, _ in gop_list]")
-    print("     frames = decoder.DecodeFromGOPListRGB(gop_data_list, files, frame_ids)")
-    print("   Characteristics:")
-    print("     • Returns: Separate GOP bundle for each video")
-    print("     • Decoding: Batch decode from list of bundles")
-    print("     • Best for: Selective loading, distributed caching, parallel processing")
-    print("     • Memory: Individual bundles, can load/unload independently")
-    print("     • Caching: Per-video cache entries, fine-grained control")
-
-    print("\n🎯 Use Case Recommendations:")
-    print("   Use GetGOP when:")
-    print("     ✓ Processing all videos together in a batch")
-    print("     ✓ Simple caching strategy (all or nothing)")
-    print("     ✓ Videos are always processed as a group")
-
-    print("\n   Use GetGOPList when:")
-    print("     ✓ Need to cache each video independently")
-    print("     ✓ Selective video loading from cache")
-    print("     ✓ Distributed storage and processing")
-    print("     ✓ Per-video cache management (expiration, priority, etc.)")
-    print("     ✓ Large video collections where loading all GOP data is impractical")
-    print("=" * 80)
-
-
 if __name__ == "__main__":
     """
     Main entry point for the GetGOPList API demonstration.
@@ -355,7 +296,7 @@ if __name__ == "__main__":
 
     Performance Characteristics:
     - Stage 1 (GetGOPList): Per-video GOP extraction with independent bundles
-    - Stage 2 (DecodeFromGOP): Selective decoding from individual bundles
+    - Stage 2 (DecodeFromGOPListRGB): Selective decoding from individual bundles
     - Memory Efficiency: Load only required video GOP data
     - Caching Granularity: Per-video cache management
     - Scalability: Better suited for large video collections
@@ -375,9 +316,6 @@ if __name__ == "__main__":
     print("=" * 80 + "\n")
 
     # Run main demonstration
-    SampleSeparationAccessGOPListAPI()
-
-    # Show API comparison
-    CompareGetGOPvsGetGOPList()
+    SampleDemuxerDecoderSeparationAccess()
 
     print("\n✓ Sample completed successfully!")

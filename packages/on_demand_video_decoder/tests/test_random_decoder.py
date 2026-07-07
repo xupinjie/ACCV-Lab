@@ -21,6 +21,14 @@ import utils
 import accvlab.on_demand_video_decoder as nvc
 
 
+def test_pynvgopdecoder_rejects_direct_construction():
+    """PyNvGopDecoder must be created via CreateGopDecoder; direct construction raises."""
+    with pytest.raises(TypeError):
+        nvc.PyNvGopDecoder()
+    with pytest.raises(TypeError):
+        nvc.PyNvGopDecoder(1, 0)
+
+
 def test_random_access_single():
     max_num_files_to_use = 6
     iter_num = 10
