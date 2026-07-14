@@ -12,10 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import numpy as np
+import ctypes
+import gc
 import os
 import random
+import time
+
+import numpy as np
+import psutil
+import pynvml
+import torch
 
 
 def is_diff_in_range(to_comp_1, to_comp_2, tolerance):
@@ -81,35 +87,15 @@ def gop_decode_bgr_with_fast_init(nv_gop_dec, file_path_list, frame_id_list, fas
         return None
 
 
-def gop_decode_bgr_ddseparate(nv_gop_dec1, nv_gop_dec2, file_path_list, frame_id_list):
-    try:
-        packets, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(file_path_list, frame_id_list)
-        decoded_frames = nv_gop_dec2.DecodeFromGOPRGB(packets, file_path_list, frame_id_list, as_bgr=True)
-        res = [torch.unsqueeze(torch.as_tensor(df), 0) for df in decoded_frames]
-        return res
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
-
-
 def gop_decode_bgr_ddseparate_with_fast_init(
     nv_gop_dec1, nv_gop_dec2, file_path_list, frame_id_list, fast_stream_infos
 ):
     try:
-        packets, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-            file_path_list, frame_id_list, fastStreamInfos=fast_stream_infos
+        gop_list = nv_gop_dec1.GetGOPList(file_path_list, frame_id_list, fastStreamInfos=fast_stream_infos)
+        gop_data_list = [data for data, _, _ in gop_list]
+        decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
+            gop_data_list, file_path_list, frame_id_list, as_bgr=True
         )
-        decoded_frames = nv_gop_dec2.DecodeFromGOPRGB(packets, file_path_list, frame_id_list, as_bgr=True)
-        res = [torch.unsqueeze(torch.as_tensor(df), 0) for df in decoded_frames]
-        return res
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
-
-
-def gop_decode_bgr_ddseparate_from_single_packet(nv_gop_dec, file_path_list, frame_id_list, packets):
-    try:
-        decoded_frames = nv_gop_dec.DecodeFromGOPRGB(packets, file_path_list, frame_id_list, as_bgr=True)
         res = [torch.unsqueeze(torch.as_tensor(df), 0) for df in decoded_frames]
         return res
     except Exception as e:
@@ -138,6 +124,132 @@ def get_data_dir():
     """
     test_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(test_root, "data")
+
+
+# ============================================================================
+# GPU / CPU Memory Measurement Utilities
+# ============================================================================
+
+
+def _query_cuda_pool(device_id: int = 0) -> tuple:
+    """Return (reserved_mb, used_mb) for the CUDA default stream-ordered pool.
+
+    Raises RuntimeError on any CUDA API failure.
+    """
+    libcuda = ctypes.CDLL("libcuda.so.1")
+    if libcuda.cuCtxSynchronize() != 0:
+        raise RuntimeError("cuCtxSynchronize failed")
+    pool = ctypes.c_void_p()
+    if libcuda.cuDeviceGetDefaultMemPool(ctypes.byref(pool), ctypes.c_int(device_id)) != 0:
+        raise RuntimeError(f"cuDeviceGetDefaultMemPool failed for device {device_id}")
+    reserved = ctypes.c_uint64(0)
+    used = ctypes.c_uint64(0)
+    # CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT = 5 (CUDA 11.2+)
+    # CU_MEMPOOL_ATTR_USED_MEM_CURRENT     = 6 (CUDA 11.2+)
+    if libcuda.cuMemPoolGetAttribute(pool, ctypes.c_int(5), ctypes.byref(reserved)) != 0:
+        raise RuntimeError("cuMemPoolGetAttribute(RESERVED_MEM_CURRENT) failed")
+    if libcuda.cuMemPoolGetAttribute(pool, ctypes.c_int(6), ctypes.byref(used)) != 0:
+        raise RuntimeError("cuMemPoolGetAttribute(USED_MEM_CURRENT) failed")
+    to_mb = 1 / (1024 * 1024)
+    return reserved.value * to_mb, used.value * to_mb
+
+
+class GPUMemoryMonitor:
+    """GPU memory monitor backed by pynvml.
+
+    Tracks all GPU memory (including CUDA Driver API allocations that
+    torch.cuda.memory_allocated() cannot see).
+
+    Two complementary leak checks:
+    - get_pool_used_mb(): directly returns USED_MEM_CURRENT of the CUDA default
+      pool. After cleanup this must be 0; a nonzero value means a cuMemAllocAsync
+      allocation was never freed (lost pointer / missing cuMemFreeAsync).
+    - get_used_memory_mb(): nvml total minus pool-cached-free blocks (RESERVED -
+      USED). Catches leaks on non-pool paths (cuMemAlloc, cudaMalloc, etc.);
+      pool-cached-free noise is subtracted so the baseline/final delta is clean.
+
+    Use as a context manager; call force_cleanup() before each measurement.
+    """
+
+    def __init__(self, gpu_id: int = 0):
+        self.gpu_id = gpu_id
+        self._initialized = False
+
+    def __enter__(self):
+        pynvml.nvmlInit()
+        self._initialized = True
+        self.handle = pynvml.nvmlDeviceGetHandleByIndex(self.gpu_id)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._initialized:
+            pynvml.nvmlShutdown()
+            self._initialized = False
+
+    def get_pool_used_mb(self) -> float:
+        """Return MB actively allocated from the CUDA default pool (USED_MEM_CURRENT).
+
+        Should be 0 after cleanup. A nonzero value indicates a pool allocation
+        leak (cuMemFreeAsync was never called for some cuMemAllocAsync allocation).
+        """
+        _, used_mb = _query_cuda_pool(self.gpu_id)
+        return used_mb
+
+    def get_used_memory_mb(self) -> float:
+        """Return total GPU usage in MB, minus CUDA pool-cached free blocks.
+
+        Subtracts (RESERVED - USED) so that memory freed into the pool but not
+        yet returned to the OS does not inflate the reading. Active pool
+        allocations (USED) are still counted as live, so pool leaks are visible.
+        """
+        info = pynvml.nvmlDeviceGetMemoryInfo(self.handle)
+        total_mb = info.used / (1024 * 1024)
+        reserved_mb, used_mb = _query_cuda_pool(self.gpu_id)
+        pool_freed_mb = max(0.0, reserved_mb - used_mb)
+        return total_mb - pool_freed_mb
+
+    def get_free_memory_mb(self) -> float:
+        """Return current GPU free memory in MB."""
+        info = pynvml.nvmlDeviceGetMemoryInfo(self.handle)
+        return info.free / (1024 * 1024)
+
+
+class CPUMemoryMonitor:
+    """CPU Memory Monitor using psutil."""
+
+    def __init__(self):
+        self.process = psutil.Process(os.getpid())
+
+    def get_rss_mb(self) -> float:
+        """Get current process RSS (Resident Set Size) in MB."""
+        return self.process.memory_info().rss / (1024 * 1024)
+
+
+def force_cleanup():
+    """Force GC and CUDA cleanup before taking a memory measurement.
+
+    Flushes Python GC, PyTorch cache, and CUDA work so that all pending frees
+    have settled before any memory reading is taken.
+    """
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.synchronize()
+    time.sleep(0.3)
+    gc.collect()
+
+
+def measure_memory_delta(baseline_gpu_mb: float, current_gpu_mb: float, tolerance_mb: float = 50.0) -> tuple:
+    """
+    Check if memory delta is within tolerance.
+
+    Returns:
+        (is_ok, delta_mb): Whether delta is within tolerance and the actual delta
+    """
+    delta = current_gpu_mb - baseline_gpu_mb
+    return delta <= tolerance_mb, delta
 
 
 def select_random_clip(path_base):

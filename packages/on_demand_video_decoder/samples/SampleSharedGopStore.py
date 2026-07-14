@@ -130,7 +130,7 @@ def SampleSharedGopStore():
     # In a real pipeline, `gop_first_frame` and `gop_len` would come from a
     # demuxer that has parsed the video index — for example, the GOP boundary
     # containing `target_frame_id` returned by `GetGOPList` /
-    # `OnDemandVideoDecoder`. See `samples/SampleSeparationAccessGOPListAPI.py`
+    # `OnDemandVideoDecoder`. See `packages/on_demand_video_decoder/samples/SampleDemuxerDecoderSeparationAccess.py`
     # for an end-to-end example of obtaining `first_frame_ids` and `gop_lens`
     # from real videos. Here we hard-code 30-frame GOPs starting at frame 0
     # to keep this demo CPU-only and free of video-file dependencies.

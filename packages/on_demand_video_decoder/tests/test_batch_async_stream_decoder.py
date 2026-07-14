@@ -112,6 +112,14 @@ def test_construct_rejects_invalid_args(kwargs):
         nvc.CreateBatchAsyncStreamReader(**kwargs)
 
 
+def test_rejects_direct_construction():
+    """PyNvBatchAsyncStreamReader must be created via CreateBatchAsyncStreamReader."""
+    with pytest.raises(TypeError):
+        nvc.PyNvBatchAsyncStreamReader()
+    with pytest.raises(TypeError):
+        nvc.PyNvBatchAsyncStreamReader(1, 1, 1)
+
+
 # ===========================================================================
 # Section B — Decode() input validation
 # ===========================================================================

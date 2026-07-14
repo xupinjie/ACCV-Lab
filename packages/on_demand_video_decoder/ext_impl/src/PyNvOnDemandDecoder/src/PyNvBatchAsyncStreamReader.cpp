@@ -550,93 +550,32 @@ void Init_PyNvBatchAsyncStreamReader(py::module& m) {
                 ...     num_of_set=1, num_of_file=6, max_frames_per_decode_call=4)
                 >>> reader.Decode(filepaths, frame_ids_2d, as_bgr=False)
                 >>> out = reader.GetBuffer(filepaths, frame_ids_2d, as_bgr=False)
-                >>> # out[v][f] is an RGBFrame; clone before next Decode() call
+                >>> # Convert to PyTorch tensors on GPU (clone before the next Decode() call)
+                >>> tensors = [[torch.as_tensor(f).clone() for f in v] for v in out]
         )pbdoc");
 
     py::class_<PyNvBatchAsyncStreamReader, std::shared_ptr<PyNvBatchAsyncStreamReader>>(
         m, "PyNvBatchAsyncStreamReader", py::module_local(),
         R"pbdoc(
-        NVIDIA GPU-accelerated 2D async stream video decoder.
+        GPU-accelerated 2D async stream video decoder.
 
-        This class submits a 2D decode request (V videos × F frames per video)
-        to a background C++ worker thread and returns the decoded frames as
-        ``List[List[RGBFrame]]`` indexed ``[v][f]``. It is async-only (no sync
-        ``Decode`` method) and 2D-only. The 1D
-        :class:`~accvlab.on_demand_video_decoder.PyNvSampleReader` class
-        serves the 1-frame-per-video case.
+        Submits a 2D decode request (V videos x F frames per video) to a
+        background worker thread and returns the decoded frames as
+        ``List[List[RGBFrame]]`` indexed ``[v][f]``: submit with :meth:`Decode`,
+        then retrieve with :meth:`GetBuffer`. See those two methods for the
+        async usage contracts.
 
-        Async model
-        ~~~~~~~~~~~
+        If you only need one frame per video per call, use
+        :class:`~accvlab.on_demand_video_decoder.PyNvSampleReader` instead.
 
-        At most one in-flight task at a time; the internal result buffer holds
-        a single result. ``Decode()`` returns immediately; ``GetBuffer()``
-        blocks until the worker pushes its result.
-
-        Calling ``Decode()`` while a previous task is still pending will:
-            1. Print a warning to stderr.
-            2. Join the previous worker.
-            3. Discard the previous result (whether already pushed or not).
-            4. Start the new task.
-
-        Calling ``Decode()`` after a previous task has completed but its result
-        has not been retrieved will also discard the previous result and start
-        a new task. Always pair every ``Decode()`` with a matching
-        ``GetBuffer()`` for the results you want to keep.
-
-        Contracts
-        ~~~~~~~~~
-
-        It is important to follow the following two contracts to ensure
-        the correct function. Read both before doing anything with the
-        returned frames.
-
-        **Contract 1 — GetBuffer() returns when GPU work is complete.**
-        The worker performs ``cuStreamSynchronize`` on its internal stream
-        before pushing the result. By the time ``GetBuffer()`` returns to
-        Python, all decoder kernels and device-to-device copies for the
-        returned frames have finished. Downstream torch / CUDA ops can read
-        the frame data on any stream without further user-level
-        synchronization.
-
-        **Contract 2 — RGBFrames are invalidated on the next Decode() call.**
-        The returned ``RGBFrame`` objects are zero-copy views into an internal
-        aggregator pool. Submitting the next ``Decode()`` reuses the same
-        pool memory for the new batch's frames. You MUST consume or clone
-        every frame you want to keep BEFORE the next ``Decode()`` call.
-        Typical idiom::
-
-            reader.Decode(files, frame_ids_a, as_bgr=False)
-            out = reader.GetBuffer(files, frame_ids_a, as_bgr=False)
-            tensors = [[torch.as_tensor(out[v][f], device="cuda").clone()
-                        for f in range(F)] for v in range(V)]
-            # Safe to call Decode() again — tensors own their own memory.
-            reader.Decode(files, frame_ids_b, as_bgr=False)
-
-        Skipping the clone leads to silent data corruption: PyTorch will not
-        know its tensor's backing memory got overwritten by the next decode.
-
-        Memory sizing
-        ~~~~~~~~~~~~~
-
-        Each video slot has its own aggregator pool, sized lazily on the
-        first ``Decode()`` to that slot to ``F * H_v * W_v * 3`` bytes.
-        Videos in a single ``Decode()`` call may have different resolutions
-        (e.g. mixed-resolution camera rigs). If a later ``Decode()`` swaps in
-        a higher-resolution video at the same slot, that slot's pool is
-        reallocated automatically. Within one Decode() call, the F frames
-        of any given video must share the same shape — this is normally
-        true since the F frames come from a single mp4 file.
+        Do not instantiate this class directly. Use
+        :func:`CreateBatchAsyncStreamReader` to obtain an instance.
 
         .. seealso::
 
-            - ``samples/SampleBatchAsyncStreamAccess.py`` for the canonical
-              prefetch loop.
-            - :class:`~accvlab.on_demand_video_decoder.PyNvSampleReader` for
-              the 1-frame-per-video API.
+            ``samples/SampleBatchAsyncStreamAccess.py`` for the canonical
+            prefetch loop.
         )pbdoc")
-        .def(py::init<int, int, int, int, bool>(), py::arg("num_of_set"), py::arg("num_of_file"),
-             py::arg("max_frames_per_decode_call"), py::arg("iGpu") = 0,
-             py::arg("suppressNoColorRangeWarning") = false)
         .def(
             "Decode",
             [](std::shared_ptr<PyNvBatchAsyncStreamReader>& reader, const std::vector<std::string>& filepaths,
@@ -652,6 +591,9 @@ void Init_PyNvBatchAsyncStreamReader(py::module& m) {
             R"pbdoc(
             Submit an async 2D decode task. Returns immediately.
 
+            If you only need one frame per video per call, use
+            :class:`PyNvSampleReader` instead.
+
             Args:
                 filepaths: List of video file paths. ``len(filepaths) <= num_of_file``.
                 frame_ids: 2D list of frame ids. ``len(frame_ids) == len(filepaths)``;
@@ -665,17 +607,28 @@ void Init_PyNvBatchAsyncStreamReader(py::module& m) {
                     jagged inner lengths, or non-positive sizes.
 
             .. note::
-                **Discards prior result.** Calling ``Decode()`` unconditionally
-                invalidates any prior buffered result. If a previous task is
-                still running, it is joined first (with a warning to stderr)
-                and its result discarded. Always pair every ``Decode()`` with
-                a matching ``GetBuffer()`` for results you want to keep.
+                **Discards prior result.** At most one task can be in flight and
+                the internal result buffer holds a single result. Calling
+                ``Decode()`` unconditionally invalidates any prior buffered
+                result. If a previous task is still running, it is joined first
+                (with a warning to stderr) and its result discarded. Always pair
+                every ``Decode()`` with a matching ``GetBuffer()`` for results
+                you want to keep.
+
+            .. note::
+                **Memory sizing.** Each video slot's output buffer is sized
+                lazily on the first ``Decode()`` to that slot and reallocated
+                automatically if a later call brings a higher resolution to the
+                same slot. Videos within one call may have different resolutions
+                (e.g. mixed-resolution camera rigs), but the F frames of any
+                given video must share the same shape — normally true since they
+                come from a single video file.
 
             .. warning::
                 **Lifetime contract.** Frames previously returned by
                 ``GetBuffer()`` become invalid as soon as you call ``Decode()``
                 again. Clone everything you need to keep BEFORE this call.
-                See class docstring for details.
+                See :meth:`GetBuffer` for details.
             )pbdoc")
         .def(
             "GetBuffer",
@@ -731,6 +684,17 @@ void Init_PyNvBatchAsyncStreamReader(py::module& m) {
                 you want to keep BEFORE calling ``Decode()`` again. Skipping
                 the clone leads to silent data corruption — PyTorch tensors
                 will not know their backing memory was overwritten.
+
+            Example:
+
+                Ref to Sample: `samples/SampleBatchAsyncStreamAccess.py`
+
+                >>> reader.Decode(files, frame_ids_a, as_bgr=False)
+                >>> out = reader.GetBuffer(files, frame_ids_a, as_bgr=False)
+                >>> tensors = [[torch.as_tensor(out[v][f], device="cuda").clone()
+                ...             for f in range(F)] for v in range(V)]
+                >>> # Safe to call Decode() again — tensors own their own memory.
+                >>> reader.Decode(files, frame_ids_b, as_bgr=False)
             )pbdoc")
         .def(
             "clearAllReaders",

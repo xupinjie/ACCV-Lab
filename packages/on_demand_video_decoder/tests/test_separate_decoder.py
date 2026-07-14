@@ -23,95 +23,15 @@ import utils
 import accvlab.on_demand_video_decoder as nvc
 
 
-def test_separate_access_single():
-    max_num_files_to_use = 6
-    iter_num = 10
-    path_base = utils.get_data_dir()
-
-    nv_gop_dec1 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    nv_gop_dec2 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    frame_min = 0
-    frame_max = 200
-
-    for c in range(iter_num):
-        files = utils.select_random_clip(path_base)
-        assert files is not None, f"files is None for select_random_clip, path_base: {path_base}"
-
-        frames = [random.randint(frame_min, frame_max) for _ in range(len(files))]
-        print(f"Comparison: {c}, frames: {frames}")
-
-        gop_decoded = utils.gop_decode_bgr_ddseparate(nv_gop_dec1, nv_gop_dec2, files, frames)
-        assert gop_decoded is not None, f"gop_decoded is None for DecodeN12ToRGB, frames: {frames}"
-
-
-def test_separate_access_from_gop_file_single():
-    max_num_files_to_use = 6
-    iter_num = 10
-    path_base = utils.get_data_dir()
-
-    nv_gop_dec1 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    nv_gop_dec2 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    frame_min = 0
-    frame_max = 200
-
-    for c in range(iter_num):
-        files = utils.select_random_clip(path_base)
-        assert files is not None, f"files is None for select_random_clip, path_base: {path_base}"
-
-        frames = [random.randint(frame_min, frame_max) for _ in range(len(files))]
-        print(f"Comparison: {c}, frames: {frames}")
-
-        packet_files = []
-        for i in range(len(files)):
-            numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(files[i : i + 1], frames[i : i + 1])
-            packet_file = os.path.join("./", f"packets_{c:02d}_{i:02d}.bin")
-            nvc.SavePacketsToFile(numpy_data, packet_file)
-            packet_files.append(packet_file)
-
-            # Verify file was created
-            assert os.path.exists(packet_file), f"Packet file not created: {packet_file}"
-            assert os.path.getsize(packet_file) == numpy_data.size, f"File size mismatch for {packet_file}"
-
-        merged_numpy_data = nv_gop_dec2.LoadGops(packet_files)
-        gop_decoded = utils.gop_decode_bgr_ddseparate_from_single_packet(
-            nv_gop_dec2, files, frames, merged_numpy_data
-        )
-
-        assert gop_decoded is not None, f"gop_decoded is None for DecodeN12ToRGB, frames: {frames}"
-
-        for packet_file in packet_files:
-            os.remove(packet_file)
-
-
 def test_separate_access_from_gop_file_to_list_api_single():
     """
     Test LoadGopsToList + DecodeFromGOPListRGB API combination with file persistence.
 
     This test validates the workflow:
-    1. Extract GOP data using GetGOP and save to separate files
+    1. Extract GOP data using GetGOPList and save to separate files
     2. Load GOP data from files as a list using LoadGopsToList
     3. Decode using DecodeFromGOPListRGB
     4. Compare with OpenCV baseline
-
-    Key difference from SeparateAccessFromGopFileSingleTest:
-    - Uses LoadGopsToList (returns list of arrays) instead of LoadGops (returns merged array)
-    - Uses DecodeFromGOPListRGB instead of DecodeFromGOPRGB
     """
     max_num_files_to_use = 6
     iter_num = 10
@@ -142,9 +62,11 @@ def test_separate_access_from_gop_file_to_list_api_single():
         # Step 1: Extract and save GOP data for each video
         packet_files = []
         for i in range(len(files)):
-            numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(files[i : i + 1], frames[i : i + 1])
+            ((numpy_data, first_frame_ids, gop_lens),) = nv_gop_dec1.GetGOPList(
+                files[i : i + 1], frames[i : i + 1]
+            )
             packet_file = os.path.join("./", f"packets_list_{c:02d}_{i:02d}.bin")
-            nvc.SavePacketsToFile(numpy_data, packet_file)
+            nvc.SaveGopToFile(numpy_data, packet_file)
             packet_files.append(packet_file)
 
             # Verify file was created
@@ -175,7 +97,7 @@ def test_separate_access_from_gop_file_to_list_api_single():
             f"frames, expected {num_frames_to_use}"
         )
 
-        # Convert to tensor format for comparison (kept for parity with original test)
+        # Convert to tensor format for comparison
         gop_decoded = [torch.unsqueeze(torch.as_tensor(df), 0) for df in decoded_frames]
         assert len(gop_decoded) == num_frames_to_use
 
@@ -184,7 +106,15 @@ def test_separate_access_from_gop_file_to_list_api_single():
             os.remove(packet_file)
 
 
-def test_separate_access_from_multi_packets_merge_on_the_fly():
+def test_separate_access_from_multi_packets_on_the_fly():
+    """
+    Test per-video GetGOPList + DecodeFromGOPListRGB with packets collected on the fly.
+
+    Calls GetGOPList once per video (one file at a time), collects the per-video
+    numpy arrays, then batch-decodes with DecodeFromGOPListRGB in a single call.
+    This exercises the code path where demux is interleaved with other work before
+    a single decode call at the end.
+    """
     max_num_files_to_use = 6
     iter_num = 10
     path_base = utils.get_data_dir()
@@ -211,50 +141,13 @@ def test_separate_access_from_multi_packets_merge_on_the_fly():
 
         packets_list = []
         for i in range(len(files)):
-            numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(files[i : i + 1], frames[i : i + 1])
+            ((numpy_data, first_frame_ids, gop_lens),) = nv_gop_dec1.GetGOPList(
+                files[i : i + 1], frames[i : i + 1]
+            )
             packets_list.append(numpy_data)
 
         gop_decoded = utils.gop_decode_bgr_ddseparate_from_multi_packets(
             nv_gop_dec2, files, frames, packets_list
-        )
-
-        assert gop_decoded is not None, f"gop_decoded is None for DecodeN12ToRGB, frames: {frames}"
-
-
-def test_separate_access_from_multi_packets_merge_packets():
-    max_num_files_to_use = 6
-    iter_num = 10
-    path_base = utils.get_data_dir()
-
-    nv_gop_dec1 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    nv_gop_dec2 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    frame_min = 0
-    frame_max = 200
-
-    for c in range(iter_num):
-        files = utils.select_random_clip(path_base)
-        assert files is not None, f"files is None for select_random_clip, path_base: {path_base}"
-
-        frames = [random.randint(frame_min, frame_max) for _ in range(len(files))]
-        print(f"Comparison: {c}, frames: {frames}")
-
-        packets_list = []
-        for i in range(len(files)):
-            numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(files[i : i + 1], frames[i : i + 1])
-            packets_list.append(numpy_data)
-
-        merged_numpy_data = nv_gop_dec1.MergePacketDataToOne(packets_list)
-
-        gop_decoded = utils.gop_decode_bgr_ddseparate_from_single_packet(
-            nv_gop_dec2, files, frames, merged_numpy_data
         )
 
         assert gop_decoded is not None, f"gop_decoded is None for DecodeN12ToRGB, frames: {frames}"
@@ -269,10 +162,6 @@ def test_separate_access_gop_list_api():
     2. Extracting gop_data from each bundle (ignoring metadata)
     3. Decoding all videos at once using DecodeFromGOPListRGB
     4. Comparing results with OpenCV baseline
-
-    Key difference from other tests:
-    - Uses GetGOPList (returns list of per-video bundles) + DecodeFromGOPListRGB
-    - Instead of GetGOP (returns single merged bundle) + DecodeFromGOPRGB
 
     This combination demonstrates the complete workflow for per-video GOP management.
     """
@@ -323,13 +212,8 @@ def test_separate_access_gop_list_api():
             assert gop_data is not None and len(gop_data) > 0, f"Bundle {i} has empty or None gop_data"
 
         # Stage 2: Decode all videos at once using DecodeFromGOPListRGB
-        # Extract only the gop_data from each bundle (ignore first_frame_ids and gop_lens metadata)
-        # GetGOPList returns: [(gop_data1, ids1, lens1), (gop_data2, ids2, lens2), ...]
-        # DecodeFromGOPListRGB needs: [gop_data1, gop_data2, ...]
         gop_data_list = [gop_data for gop_data, _, _ in gop_list]
 
-        # DecodeFromGOPListRGB: Batch decode multiple GOP bundles in one call
-        # This is the optimal way to decode GetGOPList results
         decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
             gop_data_list,  # List of per-video GOP data from GetGOPList
             files,  # List of file paths (one per video)
@@ -348,7 +232,7 @@ def test_separate_access_gop_list_api():
 
 
 def test_separate_access_gop_list_raw_api():
-    """Test GetGOPList + DecodeFromGOPList raw API."""
+    """Test GetGOPList + DecodeFromGOPList raw API (YUV output)."""
     clip_dir = os.path.join(utils.get_data_dir(), "sample_clip")
     files = [os.path.join(clip_dir, name) for name in sorted(os.listdir(clip_dir))[:3]]
     frames = [0, 7, 14]

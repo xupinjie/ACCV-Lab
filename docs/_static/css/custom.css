@@ -157,3 +157,12 @@ nav.contents ul ul ul ul {
 .rst-content dl.py.data > dt a {
     color: #26350f !important;
 }
+
+/* ===== Fix: nested py property blocks rendered inline-block ===== */
+/* The theme rule for the `property` keyword span
+   (dl[class]:not(...) .property {display:inline-block}) also matches nested
+   <dl class="py property"> blocks emitted for class attributes/properties,
+   making them flow side by side. Force them back to block layout. */
+.rst-content dl.py.property {
+    display: block !important;
+}

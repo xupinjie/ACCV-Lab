@@ -24,15 +24,20 @@ class GopRef(NamedTuple):
     """Lightweight, picklable reference to GOP data in shared memory.
 
     Designed to be passed through DataLoader IPC queues (tens of bytes)
-    instead of the actual GOP packet data (tens of KB).  The main process
-    calls ``SharedGopStore.get_batch()`` to read the referenced shm blocks
+    instead of the actual serialized GOP bundle (tens of KB).  The main process
+    calls :meth:`SharedGopStore.get_batch` to read the referenced shm blocks
     as zero-copy numpy views.
 
     Attributes:
         shm_name: POSIX SharedMemory name for the data block.
-        data_size: Number of bytes of GOP packet data.
+        data_size: Number of bytes of the serialized GOP bundle.
         first_frame_id: First frame index covered by this GOP.
         gop_len: Number of frames in this GOP.
+
+    Example:
+
+        Ref to Sample: `packages/on_demand_video_decoder/samples/SampleSharedGopStore.py` — end-to-end usage of
+        :class:`GopRef` with :class:`SharedGopStore` across DataLoader workers.
     """
 
     shm_name: str

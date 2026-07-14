@@ -24,9 +24,9 @@ import video_transforms
 
 @dataclass
 class SerializedPacketBundle:
-    data: np.ndarray
-    first_frame_ids: List[int]
-    gop_lens: List[int]
+    data: List[np.ndarray]  # one numpy array per video file
+    first_frame_ids: List[int]  # first frame id per video file
+    gop_lens: List[int]  # gop len per video file
     filepaths: List[str]
 
 
@@ -99,7 +99,7 @@ class IndexingDemuxerOndemand:
                 f"Clip index {sample_idx} is out of range. The number of clips is {self._batch_size}"
             )
 
-        gop_packets = None
+        gop_packets_list = None
 
         use_cache = False
         if self._use_cache:
@@ -108,14 +108,15 @@ class IndexingDemuxerOndemand:
         if use_cache == False:
             try:
                 nvtx.range_push("get_packets")
-                gop_packets, first_frame_ids, gop_lens = self._nv_gop_dec.GetGOP(
-                    self._video_file_paths, frame_idx_list
-                )
+                gop_list = self._nv_gop_dec.GetGOPList(self._video_file_paths, frame_idx_list)
                 nvtx.range_pop()  # get_packets
 
                 nvtx.range_push("cache data")
+                gop_packets_list = [data for data, _, _ in gop_list]
+                first_frame_ids = [fids[0] for _, fids, _ in gop_list]
+                gop_lens = [lens[0] for _, _, lens in gop_list]
                 self._packet_buffers[sample_idx] = SerializedPacketBundle(
-                    data=gop_packets,
+                    data=gop_packets_list,
                     first_frame_ids=first_frame_ids,
                     gop_lens=gop_lens,
                     filepaths=self._video_file_paths,
@@ -129,7 +130,7 @@ class IndexingDemuxerOndemand:
 
         nvtx.range_push("create_PacketOndemandBuffers")
         result = video_transforms.PacketOndemandBuffers(
-            gop_packets=gop_packets,
+            gop_packets=gop_packets_list,
             target_frame_list=frame_idx_list,
             target_file_list=self._video_file_paths,
             use_cache=use_cache,

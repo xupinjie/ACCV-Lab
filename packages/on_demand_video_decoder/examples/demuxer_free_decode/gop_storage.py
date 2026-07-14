@@ -235,7 +235,7 @@ class GOPStorageManager:
         Args:
             clip_name (str): Name of the clip (subdirectory)
             video_path (str): Path to the video file
-            packets_tuple: Tuple from GetGOP containing (numpy_data, first_frame_ids, gop_lens)
+            packets_tuple: Tuple from GetGOPList containing (numpy_data, first_frame_ids, gop_lens)
 
         Returns:
             bool: True if successful, False otherwise
@@ -251,8 +251,8 @@ class GOPStorageManager:
             gop_name = f"gop.{first_frame_ids[0]}.{gop_lens[0]}.bin"
             gop_path = os.path.join(clip_dir, gop_name)
 
-            # Save using the new SavePacketsToFile interface
-            nvc.SavePacketsToFile(numpy_data, gop_path)
+            # Save using the new SaveGopToFile interface
+            nvc.SaveGopToFile(numpy_data, gop_path)
             print(f"Saved GOP to {gop_path} ({numpy_data.size} bytes)")
             return True
 
@@ -283,7 +283,7 @@ class GOPStorageManager:
 
                     while True:
                         try:
-                            packets_tuple = self.nv_gop_demuxer.GetGOP([video_path], [frame_idx])
+                            (packets_tuple,) = self.nv_gop_demuxer.GetGOPList([video_path], [frame_idx])
                             numpy_data, first_frame_ids, gop_lens = packets_tuple
 
                             # Check if we've processed this GOP already
@@ -323,17 +323,18 @@ class GOPStorageManager:
     # .. doc-marker-end: gop-storage-store
 
     # .. doc-marker-begin: gop-storage-load
-    def load_gops(self, frame_ids: List[int], video_paths: List[str]) -> Optional[np.ndarray]:
+    def load_gops(self, frame_ids: List[int], video_paths: List[str]) -> Optional[List[np.ndarray]]:
         """
-        Load multiple GOPs for the specified frames and video paths using LoadGops.
+        Load multiple GOPs for the specified frames and video paths using LoadGopsToList.
 
         Args:
             frame_ids (List[int]): List of target frame indices
             video_paths (List[str]): List of video file paths
 
         Returns:
-            Optional[np.ndarray]: Combined numpy array compatible with DecodeFromGOP,
-                                 or None if any GOP is not found
+            Optional[List[np.ndarray]]: List of per-video numpy arrays compatible with
+                                        DecodeFromGOPListRGB, or None if one or more of
+                                        the GOPs were not found
         """
         torch.cuda.nvtx.range_push("load_gops_manager")
 
@@ -362,11 +363,10 @@ class GOPStorageManager:
 
             gop_file_paths.append(gop_info.file_path)
 
-        # Use LoadGops to merge all GOP files
         try:
-            merged_numpy_data = self.nv_gop_demuxer.LoadGops(gop_file_paths)
+            gop_data_list = self.nv_gop_demuxer.LoadGopsToList(gop_file_paths)
             torch.cuda.nvtx.range_pop()
-            return merged_numpy_data
+            return gop_data_list
         except Exception as e:
             print(f"Error loading GOPs: {e}")
             torch.cuda.nvtx.range_pop()
@@ -377,7 +377,7 @@ class GOPStorageManager:
     # .. doc-marker-begin: gop-storage-load-fast
     def load_gops_fast(
         self, frame_ids: List[int], video_paths: List[str], fix_gop_size: int
-    ) -> Optional[np.ndarray]:
+    ) -> Optional[List[np.ndarray]]:
         """
         Fast path to load multiple GOPs assuming a fixed GOP size in filenames.
 
@@ -391,8 +391,9 @@ class GOPStorageManager:
             fix_gop_size (int): Fixed GOP size used when storing, e.g., 30.
 
         Returns:
-            Optional[np.ndarray]: Combined numpy array compatible with DecodeFromGOP,
-                                  or None if any GOP file is not found.
+            Optional[List[np.ndarray]]: List of per-video numpy arrays compatible with
+                                        DecodeFromGOPListRGB, or None if any single GOP file is
+                                        missing (fail-fast: returns immediately on first miss).
         """
         torch.cuda.nvtx.range_push("load_gops_fast_manager")
 
@@ -445,11 +446,10 @@ class GOPStorageManager:
                 torch.cuda.nvtx.range_pop()
                 return None
 
-        # Merge GOPs
         try:
-            merged_numpy_data = self.nv_gop_demuxer.LoadGops(gop_file_paths)
+            gop_data_list = self.nv_gop_demuxer.LoadGopsToList(gop_file_paths)
             torch.cuda.nvtx.range_pop()
-            return merged_numpy_data
+            return gop_data_list
         except Exception as e:
             print(f"Error loading GOPs (fast): {e}")
             torch.cuda.nvtx.range_pop()

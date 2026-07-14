@@ -90,7 +90,7 @@ __all__ = [
     'CreateSampleReader',
     'CreateBatchAsyncStreamReader',
     'GetFastInitInfo',
-    'SavePacketsToFile',
+    'SaveGopToFile',
     # Python decoder with caching
     'CachedGopDecoder',
     'CreateGopDecoder',

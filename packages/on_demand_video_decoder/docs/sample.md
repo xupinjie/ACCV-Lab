@@ -19,11 +19,8 @@ section helps you quickly locate the sample code that matches your requirements.
 | [SampleRandomAccess.py](../samples/SampleRandomAccess.py) | Random frame sampling for training | {py:func}`~accvlab.on_demand_video_decoder.CreateGopDecoder`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeN12ToRGB` |
 | [SampleRandomAccessWithFastInit.py](../samples/SampleRandomAccessWithFastInit.py) | Multi-clip batch processing with optimization | {py:func}`~accvlab.on_demand_video_decoder.GetFastInitInfo` |
 | [SampleStreamAccess.py](../samples/SampleStreamAccess.py) | Sequential frame decoding | {py:func}`~accvlab.on_demand_video_decoder.CreateSampleReader` |
-| [SampleSeparationAccess.py](../samples/SampleSeparationAccess.py) | Demuxer/decoder separation with GOP caching | {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOP`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPRGB`, {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.isCacheHit` |
-| [SampleSeparationAccessGOPListAPI.py](../samples/SampleSeparationAccessGOPListAPI.py) | Per-video GOP management with caching | {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`, {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.isCacheHit` |
-| [SampleDecodeFromGopFiles.py](../samples/SampleDecodeFromGopFiles.py) | GOP data persistence to disk | {py:func}`~accvlab.on_demand_video_decoder.SavePacketsToFile`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGops` |
-| [SampleDecodeFromGopFilesToListAPI.py](../samples/SampleDecodeFromGopFilesToListAPI.py) | Selective GOP loading | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB` |
-| [SampleDecodeFromGopList.py](../samples/SampleDecodeFromGopList.py) | Batch decode from multiple demux results (N demux → 1 decode) | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB` |
+| [SampleDemuxerDecoderSeparationAccess.py](../samples/SampleDemuxerDecoderSeparationAccess.py) | Demuxer/decoder separation with GOP caching | {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`, {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.isCacheHit` |
+| [SampleDecodeFromGopFiles.py](../samples/SampleDecodeFromGopFiles.py) | GOP file persistence with selective loading | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB` |
 | [SampleStreamAsyncAccess.py](../samples/SampleStreamAsyncAccess.py) | Async stream decoding with prefetching | {py:func}`~accvlab.on_demand_video_decoder.CreateSampleReader`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvSampleReader.DecodeN12ToRGBAsync`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvSampleReader.DecodeN12ToRGBAsyncGetBuffer` |
 | [SampleBatchAsyncStreamAccess.py](../samples/SampleBatchAsyncStreamAccess.py) | 2D async stream decoding — multiple frames per video per call, with prefetching | {py:func}`~accvlab.on_demand_video_decoder.CreateBatchAsyncStreamReader`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvBatchAsyncStreamReader.Decode`, {py:meth}`~accvlab.on_demand_video_decoder.PyNvBatchAsyncStreamReader.GetBuffer` |
 | [SampleSharedGopStore.py](../samples/SampleSharedGopStore.py) | Cross-process shared GOP cache for DataLoader | {py:class}`~accvlab.on_demand_video_decoder.SharedGopStore`, {py:class}`~accvlab.on_demand_video_decoder.GopRef` |
@@ -52,17 +49,11 @@ If you need sequential frame decoding:
         → Use SampleStreamAccess
 
 If you need to separate demuxing and decoding:
-    If per-video GOP management is required (i.e., use of separate per-video GOP data):
-        → Use SampleSeparationAccessGOPListAPI
-    Otherwise:
-        → Use SampleSeparationAccess
+    (e.g., DataLoader workers demux on CPU, main process batch-decodes on GPU)
+    → Use SampleDemuxerDecoderSeparationAccess
 
-If you need to save GOP data to disk:
+If you need to save serialized GOP bundles to disk:
     → Use SampleDecodeFromGopFiles
-
-If you need to batch decode from multiple separate demux operations:
-    (e.g., DataLoader workers demux in parallel, main process batch decode)
-    → Use SampleDecodeFromGopList
 
 If you need cross-process shared GOP caching for DataLoader workers:
     (e.g., workers demux GOPs into shared memory, main process reads zero-copy)
@@ -79,13 +70,15 @@ Before diving into the samples, understanding these concepts will be helpful:
   - **Random Access**: Direct access to any frame without sequential decoding
   - **Stream Access**: Optimized for sequential frame processing with caching
   - **Separation Access**: Separate demuxing and decoding stages
-  - **Demuxer-Free**: Decode directly from pre-extracted GOP data
+  - **Demuxer-Free**: Decode directly from pre-extracted serialized GOP bundles
 
 - **FastInit**: An optimization technique that caches stream metadata to accelerate decoder initialization for multiple clips with similar properties.
 
-- **GOP Caching**: A Python-side caching mechanism that stores extracted GOP data in memory. When the same video file is requested with a `frame_id` that falls within an already cached GOP range, the cached data is returned directly without re-demuxing from the video file.
+- **Serialized GOP Bundle**: The numpy object returned by {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList` — one video's GOP, serialized by `accvlab` into a self-contained binary format. Treat it as an opaque blob: decode it with {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`, or persist/reload it with {py:func}`~accvlab.on_demand_video_decoder.SaveGopToFile` / {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList`.
 
-- **SharedGopStore**: A cross-process shared memory cache for GOP data, backed by POSIX SharedMemory (`/dev/shm`). Workers store GOP packets in shared memory and pass lightweight `GopRef` references through the DataLoader IPC queue. The main process reads the data as zero-copy numpy views via `get_batch()`. Uses file-based locking (`flock`) for cross-process safety and LRU eviction when capacity is exceeded.
+- **GOP Caching**: A Python-side caching mechanism that stores extracted serialized GOP bundles in memory. When the same video file is requested with a `frame_id` that falls within an already cached GOP range, the cached bundle is returned directly without re-demuxing from the video file.
+
+- **SharedGopStore**: A cross-process shared memory cache for serialized GOP bundles, backed by POSIX SharedMemory (`/dev/shm`). Workers store bundles in shared memory and pass lightweight `GopRef` references through the DataLoader IPC queue. The main process reads the data as zero-copy numpy views via `get_batch()`. Uses file-based locking (`flock`) for cross-process safety and LRU eviction when capacity is exceeded.
 
 ## 2. Quick Start
 
@@ -343,17 +336,18 @@ Stream Access mode is optimized for sequential frame processing with intelligent
 
 **Core APIs**
 
-- {py:func}`~accvlab.on_demand_video_decoder.CreateSampleReader`: Initialize the sample reader (different from 
+- {py:func}`~accvlab.on_demand_video_decoder.CreateSampleReader`: Create the stream-access decoder (different from 
   {py:func}`~accvlab.on_demand_video_decoder.CreateGopDecoder`)
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeN12ToRGB`: Decode frames with caching 
+- {py:meth}`~accvlab.on_demand_video_decoder.PyNvSampleReader.DecodeN12ToRGB`: Decode frames with caching 
   optimization
 
 **Key Difference from Random Access**
 
 Stream Access uses {py:func}`~accvlab.on_demand_video_decoder.CreateSampleReader` instead of 
 {py:func}`~accvlab.on_demand_video_decoder.CreateGopDecoder`. The key advantage is the use of 
-caching-based optimizations. There is also the ability to iterate over individual sets of video file sets, 
-each set being accessed sequentially (with the number of sets being controlled by the `num_of_set` parameter).
+caching-based optimizations. A *sample* is one set of video files that are read together (e.g. the 
+synchronized multi-camera clips of one training sample); the reader keeps up to `num_of_set` samples 
+cached, each accessed sequentially.
 
 **Code Walkthrough**
 
@@ -713,35 +707,40 @@ Separation Access mode decouples demuxing and decoding into two separate stages.
 
 - Need separate control over demuxing and decoding
 - One-time demuxing, multiple decoding operations
-- Inspection or processing of intermediate packet data
+- Inspection or processing of intermediate GOP bundles
 - Custom processing pipelines
 
 #### 3.3.2 Two-Stage Architecture
 
 ```
-Stage 1 (Demuxing):
-Video File → GetGOP() → Packet Data (GOP)
-                         ├─ packets
-                         ├─ first_frame_ids
-                         └─ gop_lens
+Stage 1 (Demuxing, CPU only):
+Video Files → GetGOPList() → serialized GOP bundles, one per video
+                             [(bundle, first_frame_ids, gop_lens), ...]
 
-Stage 2 (Decoding):
-Packet Data → DecodeFromGOPRGB() → Decoded Frames
+Stage 2 (Decoding, GPU):
+serialized GOP bundles → DecodeFromGOPListRGB() → Decoded Frames
 ```
 
-#### 3.3.3 Sample: Basic Separation Access
+Stage 1 extracts, for each video, the GOP (Group of Pictures) that contains the
+requested frame as a serialized GOP bundle. Stage 2 decodes the requested frames
+from the bundles on the GPU. Because the two stages communicate only through the
+bundles, they can run at different times, in different processes, or on different
+machines.
 
-**File:** `packages/on_demand_video_decoder/samples/SampleSeparationAccess.py`
+#### 3.3.3 Sample: Demuxer/Decoder Separation Access
+
+**File:** `packages/on_demand_video_decoder/samples/SampleDemuxerDecoderSeparationAccess.py`
 
 **Core APIs**
 
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOP`: Extract packet data (demuxing only)
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPRGB`: Decode from packet data 
-  (decoding only)
+- {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`: Stage 1 — extract serialized GOP bundles 
+  (demuxing only)
+- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`: Stage 2 — decode frames 
+  from serialized GOP bundles (decoding only)
 
 **Code Walkthrough**
 
-Initialize two separate decoders:
+Initialize one decoder per stage:
 
 ```python
 # Stage 1 decoder: for packet extraction
@@ -752,103 +751,10 @@ nv_gop_dec2 = nvc.CreateGopDecoder(maxfiles=6, iGpu=0)
 ```
 
 > **ℹ️ Note**: Using separate decoder instances allows independent configuration and resource management.
+> In particular, Stage 1 (demuxing) is CPU-only, so the demuxing decoder can live in DataLoader worker
+> processes while the decoding decoder stays in the main process.
 
-Stage 1 - Extract packet data:
-
-```python
-file_path_list = [
-    "/data/videos/scene_CAM_BACK_LEFT.mp4",
-    "/data/videos/scene_CAM_BACK.mp4",
-    # ... more files
-]
-
-# Extract GOP data containing frame 77 for all videos
-packets, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-    file_path_list,
-    [77] * len(file_path_list)
-)
-```
-
-**Understanding the return values:**
-- `packets`: Compressed packet data (numpy array)
-- `first_frame_ids`: First frame ID in each extracted GOP
-- `gop_lens`: Number of frames in each GOP
-
-Stage 2 - Decode from packet data:
-
-```python
-# Generate frame IDs within the GOP range
-frame_id_list = [
-    random.randint(first_frame_ids[i], first_frame_ids[i] + gop_lens[i] - 1)
-    for i in range(len(file_path_list))
-]
-
-# Decode frames directly from packet data
-decoded_frames = nv_gop_dec2.DecodeFromGOPRGB(
-    packets,           # Packet data from Stage 1
-    file_path_list,    # Original file paths (for reference)
-    frame_id_list,     # Target frame indices
-    True               # BGR output
-)
-```
-
-**Validation**
-
-Always validate that frame IDs are within GOP range:
-
-```python
-if frame_id < first_frame_ids[i] or frame_id >= first_frame_ids[i] + gop_lens[i]:
-    print(f"Frame {frame_id} is out of range for GOP starting at {first_frame_ids[i]}")
-```
-
-**Advantages of Separation**
-
-1. Demux once, decode multiple times with different frame selections
-2. Ability to inspect or process packet data
-3. Separate optimization of demuxing and decoding stages
-4. Foundation for more advanced processing pipelines
-
-**Running the Sample**
-
-```bash
-cd packages/on_demand_video_decoder/samples
-python SampleSeparationAccess.py
-```
-
-#### 3.3.4 Sample: Separation Access with GetGOPList API
-
-**File:** `packages/on_demand_video_decoder/samples/SampleSeparationAccessGOPListAPI.py`
-
-**When to Use**
-
-{py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOPList` is preferred over 
-{py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOP` when:
-- Processing large video collections
-- Per-video cache management is needed
-- Selective video loading is required
-- Distributed storage and processing
-
-**Core Difference: {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOP` vs** 
-**{py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOPList`**
-
-| Feature | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOP` | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOPList` |
-|---------|--------|------------|
-| Return type | Single merged bundle | List of per-video bundles |
-| Data structure | `(packets, ids, lens)` | `[(packets1, ids1, lens1), (packets2, ids2, lens2), ...]` |
-| Memory management | Load all or nothing | Load selectively |
-| Decoding API | DecodeFromGOPRGB | DecodeFromGOPListRGB |
-| Best for | Batch processing all videos | Per-video management |
-
-**Core APIs**
-
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOPList`: Extract packet data per video (not 
-  merged)
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`: Decode from list of packet 
-  data
-
-**Code Walkthrough**
-
-Stage 1 - Extract per-video GOP data:
+Stage 1 - Extract serialized GOP bundles:
 
 ```python
 file_path_list = [
@@ -860,96 +766,95 @@ file_path_list = [
     "/data/videos/CAM_FRONT_RIGHT.mp4",
 ]
 
-# Extract GOP data, returns list of tuples
+# Extract the GOP containing frame 77 from every video
 gop_list = nv_gop_dec1.GetGOPList(
     file_path_list,
     [77] * len(file_path_list)
 )
-
-# gop_list structure:
-# [
-#   (packets_video1, first_frame_ids_video1, gop_lens_video1),
-#   (packets_video2, first_frame_ids_video2, gop_lens_video2),
-#   ...
-# ]
 ```
 
-Per-video GOP data inspection:
+**Understanding the return value:** `gop_list` holds one tuple per video:
 
 ```python
-for i, (gop_data, first_frame_ids, gop_lens) in enumerate(gop_list):
+for i, (packets, first_frame_ids, gop_lens) in enumerate(gop_list):
     print(f"Video {i}:")
-    print(f"  GOP data size: {len(gop_data)} bytes")
-    print(f"  First frame ID: {first_frame_ids[0]}")
-    print(f"  GOP length: {gop_lens[0]}")
+    print(f"  Bundle size: {len(packets)} bytes")        # serialized GOP bundle (numpy array)
+    print(f"  First frame ID: {first_frame_ids[0]}")     # first frame of the extracted GOP
+    print(f"  GOP length: {gop_lens[0]}")                # number of frames in the GOP
 ```
 
-Simulating per-video caching:
+Any frame inside `[first_frame_id, first_frame_id + gop_len)` can later be decoded
+from this bundle — no further access to the video file is needed.
+
+Stage 2 - Decode frames from the bundles:
 
 ```python
-# Cache GOP data per video
-gop_cache = {}
-for i, (gop_data, first_frame_ids, gop_lens) in enumerate(gop_list):
-    cache_key = f"video_{i}_frame_77"
-    gop_cache[cache_key] = {
-        'gop_data': gop_data,
-        'first_frame_ids': first_frame_ids,
-        'gop_lens': gop_lens,
-        'filepath': file_path_list[i]
-    }
+# Pick a target frame within each GOP's range
+frame_id_list = [
+    random.randint(first_ids[0], first_ids[0] + lens[0] - 1)
+    for _, first_ids, lens in gop_list
+]
+
+decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
+    [packets for packets, _, _ in gop_list],  # serialized GOP bundles, one per video
+    file_path_list,                           # Corresponding file paths
+    frame_id_list,                            # Target frame indices
+    True                                      # BGR output
+)
+
+# Convert to PyTorch tensors on GPU (shape (height, width, 3), uint8)
+tensors = [torch.as_tensor(frame).clone() for frame in decoded_frames]
 ```
 
-Stage 2 - Selective decoding:
+**Decoding a subset**
+
+Because each video has its own serialized GOP bundle, Stage 2 does not have to
+decode everything that Stage 1 extracted. For example, decode only the front cameras:
 
 ```python
-# Select only specific videos to decode (e.g., front cameras only)
 selected_indices = [3, 4, 5]  # Front-left, front, front-right
 
-selected_gop_data_list = []
-selected_filepaths = []
-selected_frame_ids = []
-
-for idx in selected_indices:
-    cache_key = f"video_{idx}_frame_77"
-    cached_item = gop_cache[cache_key]
-    
-    # Generate random frame within GOP range
-    first_frame_id = cached_item['first_frame_ids'][0]
-    gop_len = cached_item['gop_lens'][0]
-    random_frame = random.randint(first_frame_id, first_frame_id + gop_len - 1)
-    
-    selected_gop_data_list.append(cached_item['gop_data'])
-    selected_filepaths.append(cached_item['filepath'])
-    selected_frame_ids.append(random_frame)
-
-# Decode only selected videos
 decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
-    selected_gop_data_list,  # List of GOP data for selected videos
-    selected_filepaths,      # Corresponding file paths
-    selected_frame_ids,      # Frame IDs to decode
-    True                     # BGR output
+    [gop_list[i][0] for i in selected_indices],
+    [file_path_list[i] for i in selected_indices],
+    [frame_id_list[i] for i in selected_indices],
+    True
 )
 ```
 
-**Key Advantages**
+This is what makes the separated pipeline flexible: serialized GOP bundles can be
+kept in memory, cached, or persisted to disk (see Section 3.4), and decoded later
+in any combination.
 
-1. Load only required videos from cache (memory efficient)
-2. Per-video cache management (independent expiration, priority)
-3. Better suited for distributed systems
-4. Reduced inter-video dependencies
+**Validation**
+
+Always validate that frame IDs are within GOP range:
+
+```python
+if frame_id < first_frame_id or frame_id >= first_frame_id + gop_len:
+    print(f"Frame {frame_id} is out of range for GOP starting at {first_frame_id}")
+```
+
+**Advantages of Separation**
+
+1. Demux once, decode multiple times with different frame selections
+2. CPU-bound demuxing and GPU-bound decoding can be scheduled and scaled independently
+3. Decode any subset of the extracted videos
+4. The serialized GOP bundle is a portable intermediate: cache it in memory (Section 3.3.4),
+   share it across processes (Section 3.5), or persist it to disk (Section 3.4)
 
 **Running the Sample**
 
 ```bash
 cd packages/on_demand_video_decoder/samples
-python SampleSeparationAccessGOPListAPI.py
+python SampleDemuxerDecoderSeparationAccess.py
 ```
 
-#### 3.3.5 GOP Caching Feature
+#### 3.3.4 GOP Caching Feature
 
-The GOP caching feature automatically stores extracted GOP data in Python memory, eliminating the need for 
-manual cache management by the user. When enabled, subsequent calls to {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOP` or {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList` with the same 
-video file and a `frame_id` within the cached GOP range will return cached data without re-demuxing.
+The GOP caching feature automatically stores extracted serialized GOP bundles in Python memory, eliminating the need for 
+manual cache management by the user. When enabled, subsequent calls to {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList` with the same 
+video file and a `frame_id` within the cached GOP range will return the cached bundle without re-demuxing.
 
 **Why Use GOP Caching?**
 
@@ -963,22 +868,22 @@ Without caching, users would need to manually track GOP ranges and manage cache 
 
 **Enabling GOP Caching**
 
-Set `useGOPCache=True` when calling {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOP` or {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`:
+Set `useGOPCache=True` when calling {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`:
 
 ```python
 import accvlab.on_demand_video_decoder as nvc
 
 decoder = nvc.CreateGopDecoder(maxfiles=6, iGpu=0)
 
-# First call - fetches GOP data from video files
-packets, first_ids, gop_lens = decoder.GetGOP(
+# First call - fetches serialized GOP bundles from video files
+gop_list = decoder.GetGOPList(
     file_path_list, 
     [77] * len(file_path_list), 
     useGOPCache=True
 )
 
 # Second call with frame_id=80 (within the same GOP range) - returns from cache
-packets, first_ids, gop_lens = decoder.GetGOP(
+gop_list = decoder.GetGOPList(
     file_path_list, 
     [80] * len(file_path_list), 
     useGOPCache=True
@@ -995,11 +900,11 @@ If the `frame_id` is outside the cached GOP range, a new GOP is fetched and the 
 
 **Checking Cache Hit Status**
 
-Use the {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.isCacheHit` method to check whether the last {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOP` or {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList` call hit the cache:
+Use the {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.isCacheHit` method to check whether the last {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList` call hit the cache:
 
 ```python
-# Call GetGOP with caching
-packets, first_ids, gop_lens = decoder.GetGOP(file_path_list, frame_ids, useGOPCache=True)
+# Call GetGOPList with caching
+gop_list = decoder.GetGOPList(file_path_list, frame_ids, useGOPCache=True)
 
 # Check cache hit status for each video
 cache_hits = decoder.isCacheHit()
@@ -1016,7 +921,7 @@ The decoder provides methods to manage the cache:
 | Method | Description |
 |--------|-------------|
 | {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.get_cache_info` | Returns a dictionary with cache statistics |
-| {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.clear_cache` | Clears all cached GOP data |
+| {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.clear_cache` | Clears all cached GOP bundles |
 
 Example:
 
@@ -1030,9 +935,9 @@ print(f"File paths: {cache_info['cached_files']}")
 decoder.clear_cache()
 ```
 
-**GOP Caching with GetGOPList**
+**Partial Cache Hits**
 
-The caching feature works identically with {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`:
+Cache hits are tracked per video, so a single call can mix hits and misses:
 
 ```python
 # First call - all videos are fetched
@@ -1042,19 +947,6 @@ print(decoder.isCacheHit())  # [False, False, False]
 # Second call with some frame_ids in range, some out of range
 gop_list = decoder.GetGOPList(file_path_list, [80, 80, 150], useGOPCache=True)
 print(decoder.isCacheHit())  # [True, True, False] - partial cache hit
-```
-
-**Shared Cache Between GetGOP and GetGOPList**
-
-The cache is shared between {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOP` and {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList` calls on the same decoder instance:
-
-```python
-# Cache populated via GetGOP
-packets, _, _ = decoder.GetGOP(["/path/to/video.mp4"], [50], useGOPCache=True)
-
-# Cache hit via GetGOPList (same file, frame_id in range)
-gop_list = decoder.GetGOPList(["/path/to/video.mp4"], [55], useGOPCache=True)
-print(decoder.isCacheHit())  # [True]
 ```
 
 > **⚠️ Note**: The cache is stored in Python memory. Each video file caches only one GOP (the most 
@@ -1075,13 +967,13 @@ print(decoder.isCacheHit())  # [True]
 
 ### 3.4 Demuxer-Free Decoding
 
-Demuxer-Free mode allows decoding directly from pre-extracted GOP data, either stored on disk or in memory. This approach is ideal for scenarios requiring repeated access to the same video segments.
+Demuxer-Free mode allows decoding directly from pre-extracted serialized GOP bundles, either stored on disk or in memory. This approach is ideal for scenarios requiring repeated access to the same video segments.
 
 #### 3.4.1 Use Cases
 
 - Pre-processing video datasets for training
 - Repeated access to same video segments
-- Disk storage for GOP data caching
+- Disk storage for GOP bundle caching
 - Eliminating demuxing overhead in production
 - PyTorch DataLoader integration with worker processes
 
@@ -1093,18 +985,20 @@ Demuxer-Free mode allows decoding directly from pre-extracted GOP data, either s
 
 ```
 Phase 1: GOP Data Preparation
-Video Files → GetGOP() → SavePacketsToFile() → .bin files on disk
+Video Files → GetGOPList() → SaveGopToFile() → one .bin file per video
 
 Phase 2: Decoding from Files
-.bin files → LoadGops() → DecodeFromGOPRGB() → Decoded Frames
+.bin files → LoadGopsToList() → DecodeFromGOPListRGB() → Decoded Frames
 ```
 
 **Core APIs**
 
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOP`: Extract GOP packet data
-- {py:func}`~accvlab.on_demand_video_decoder.SavePacketsToFile`: Save packets to binary file
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGops`: Load packets from binary files (merged)
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPRGB`: Decode from loaded packets
+- {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`: Extract serialized GOP bundles (one per video)
+- {py:func}`~accvlab.on_demand_video_decoder.SaveGopToFile`: Save one video's serialized GOP bundle to a binary file
+- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList`: Load GOP files back
+  (one numpy array per file)
+- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`: Decode from list of GOP 
+  data
 
 **Code Walkthrough**
 
@@ -1118,121 +1012,7 @@ nv_gop_dec1 = nvc.CreateGopDecoder(maxfiles=6, iGpu=0)
 nv_gop_dec2 = nvc.CreateGopDecoder(maxfiles=6, iGpu=0)
 ```
 
-Phase 1 - Extract and save GOP data:
-
-```python
-file_list = [
-    "/data/videos/CAM_BACK_LEFT.mp4",
-    "/data/videos/CAM_BACK.mp4",
-    # ... more files
-]
-
-frames = [random.randint(0, 200) for _ in range(len(file_list))]
-packet_files = []
-
-for i in range(len(file_list)):
-    # Extract packet data for single file
-    numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-        file_list[i:i+1],
-        frames[i:i+1]
-    )
-    
-    # Save to binary file
-    packet_file = f"./gop_packets_{i:02d}.bin"
-    nvc.SavePacketsToFile(numpy_data, packet_file)
-    packet_files.append(packet_file)
-    
-    print(f"Saved GOP data: {os.path.getsize(packet_file)} bytes")
-```
-
-Phase 2 - Load and decode from GOP files:
-
-```python
-# Load stored GOP data
-merged_numpy_data = nv_gop_dec2.LoadGops(packet_files)
-
-print(f"Loaded GOP data: {merged_numpy_data.size} bytes")
-
-# Decode frames from loaded data
-decoded_frames = nv_gop_dec2.DecodeFromGOPRGB(
-    merged_numpy_data,  # Merged packet data from LoadGops
-    file_list,          # Original video file paths
-    frames,             # Target frame indices
-    as_bgr=True
-)
-```
-
-Cleanup temporary files:
-
-```python
-for packet_file in packet_files:
-    if os.path.exists(packet_file):
-        os.remove(packet_file)
-```
-
-**File Format**
-
-GOP files are binary files containing raw packet data. The format is:
-- Binary format (no header)
-- Direct memory dump of packet data
-- File extension: `.bin` (recommended)
-
-**Storage Considerations**
-
-- GOP file size: Typically 5-15% of original video size
-- Storage savings: ~85-95% compared to extracted frames
-- I/O performance: SSD recommended for best performance
-
-**When to Use**
-
-Use GOP file storage when:
-- Same video segments accessed repeatedly
-- Training multiple epochs on the same dataset
-- Storage is cheaper than compute
-- Want to eliminate demuxing overhead
-
-**Running the Sample**
-
-```bash
-cd packages/on_demand_video_decoder/samples
-python SampleDecodeFromGopFiles.py
-```
-
-#### 3.4.3 Sample: GOP File List API
-
-**File:** `packages/on_demand_video_decoder/samples/SampleDecodeFromGopFilesToListAPI.py`
-
-**When to Use**
-
-{py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList` is preferred over 
-{py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGops` when:
-- Large video collections (>10 videos)
-- Need selective loading of specific videos
-- Per-video cache management
-- Distributed caching systems
-
-**Core Difference: {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGops` vs** 
-**{py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList`**
-
-| Feature | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGops` | {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList` |
-|---------|----------|----------------|
-| Return type | Single merged numpy array | List of numpy arrays (one per video) |
-| Loading | All or nothing | Selective loading possible |
-| Memory usage | Load all GOP data at once | Load only needed videos |
-| Decoding API | DecodeFromGOPRGB | DecodeFromGOPListRGB |
-| Best for | Small video sets | Large video collections |
-
-**Core APIs**
-
-- {py:func}`~accvlab.on_demand_video_decoder.SavePacketsToFile`: Save per-video GOP data
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.LoadGopsToList`: Load GOP files as list (not 
-  merged)
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`: Decode from list of GOP 
-  data
-
-**Code Walkthrough**
-
-Phase 1 - Save per-video GOP files:
+Phase 1 - Extract serialized GOP bundles and save one file per video:
 
 ```python
 file_list = [
@@ -1247,44 +1027,41 @@ file_list = [
 camera_names = ["CAM_BACK_LEFT", "CAM_BACK", "CAM_BACK_RIGHT",
                 "CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"]
 
-packet_files = []
 frames = [random.randint(0, 200) for _ in range(len(file_list))]
 
-for i in range(len(file_list)):
-    # Extract GOP data for single video
-    numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-        file_list[i:i+1],
-        frames[i:i+1]
-    )
-    
-    # Create unique filename per video
+# Extract serialized GOP bundles for all videos in one call (one per video)
+gop_list = nv_gop_dec1.GetGOPList(file_list, frames)
+
+packet_files = []
+for i, (numpy_data, first_frame_ids, gop_lens) in enumerate(gop_list):
     packet_file = f"./gop_{camera_names[i]}.bin"
-    nvc.SavePacketsToFile(numpy_data, packet_file)
+    nvc.SaveGopToFile(numpy_data, packet_file)
     packet_files.append(packet_file)
+
+    print(f"Saved GOP bundle: {os.path.getsize(packet_file)} bytes")
 ```
 
-Phase 2 - Load all GOP files as list:
+Phase 2 - Load the GOP files and decode:
 
 ```python
-# Load GOP files as separate bundles (not merged)
+# Load the GOP files (one numpy array per file)
 gop_data_list = nv_gop_dec2.LoadGopsToList(packet_files)
 
 # gop_data_list is a list of numpy arrays, one per video
 print(f"Loaded {len(gop_data_list)} GOP bundles")
 for i, gop_data in enumerate(gop_data_list):
     print(f"  Bundle {i} ({camera_names[i]}): {len(gop_data)} bytes")
-```
 
-Decode from GOP list:
-
-```python
 # Decode all videos
 decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
-    gop_data_list,  # List of GOP data
+    gop_data_list,  # List of serialized GOP bundles
     file_list,      # List of file paths
     frames,         # List of frame IDs
     as_bgr=True
 )
+
+# Convert to PyTorch tensors on GPU (shape (height, width, 3), uint8)
+tensors = [torch.as_tensor(frame).clone() for frame in decoded_frames]
 ```
 
 Phase 3 - Selective loading demonstration:
@@ -1310,106 +1087,72 @@ decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
 print(f"Loaded and decoded only {len(selected_indices)} out of {len(packet_files)} videos")
 ```
 
+Cleanup temporary files:
+
+```python
+for packet_file in packet_files:
+    if os.path.exists(packet_file):
+        os.remove(packet_file)
+```
+
+**File Format**
+
+Each GOP file is a binary file containing one video's serialized GOP bundle
+(the same self-contained format returned by one element of {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`,
+with an embedded frame offset table). Recommended file extension: `.bin`.
+
+**Storage Considerations**
+
+- GOP file size: Typically 5-15% of original video size
+- Storage savings: ~85-95% compared to extracted frames
+- I/O performance: SSD recommended for best performance
+
 **Key Advantages**
 
-1. Memory efficiency: Load only needed videos
-2. Flexible loading: Different subsets for different batches
-3. Distributed caching: Store videos on different machines
-4. Per-video cache management: Independent expiration policies
+1. Eliminate demuxing overhead: Same video segments accessed repeatedly (e.g.,
+   training multiple epochs) are demuxed only once
+2. Memory efficiency: Load only needed videos
+3. Flexible loading: Different subsets for different batches
+4. Distributed caching: Store videos on different machines
+5. Per-video cache management: Independent expiration policies
 
 **Running the Sample**
 
 ```bash
 cd packages/on_demand_video_decoder/samples
-python SampleDecodeFromGopFilesToListAPI.py
+python SampleDecodeFromGopFiles.py
 ```
 
-#### 3.4.4 Sample: Batch Decode from Multiple Demux Results
-
-**File:** `packages/on_demand_video_decoder/samples/SampleDecodeFromGopList.py`
+#### 3.4.3 Pattern: Batch Decode from Multiple Demux Results
 
 **When to Use**
 
-This sample demonstrates the pattern of multiple demuxing operations followed by a single batch decode:
+A common integration pattern is multiple demuxing operations followed by a single batch decode:
 - Demux executed N times separately (e.g., in DataLoader `__getitem__`, called batch_size times)
 - Decode executed once for the entire batch
 - Enables parallel demuxing in worker processes, centralized batch decoding in main process
-- No disk I/O for GOP data (in-memory packet passing)
+- No disk I/O for GOP bundles (passed in memory)
 
 **Architecture: N Demux → 1 Batch Decode**
 
 ```
-Worker/Process 1: Video File 1 → GetGOP() → packets_1 (in memory)
-Worker/Process 2: Video File 2 → GetGOP() → packets_2 (in memory)
-Worker/Process 3: Video File 3 → GetGOP() → packets_3 (in memory)
+Worker/Process 1: Video File 1 → GetGOPList() → bundle_1 (in memory)
+Worker/Process 2: Video File 2 → GetGOPList() → bundle_2 (in memory)
+Worker/Process 3: Video File 3 → GetGOPList() → bundle_3 (in memory)
                      ⋮                            ⋮
-Worker/Process N: Video File N → GetGOP() → packets_N (in memory)
+Worker/Process N: Video File N → GetGOPList() → bundle_N (in memory)
                                                       ↓
-                          Collect all packets: [packets_1, packets_2, ..., packets_N]
+                          Collect all bundles: [bundle_1, bundle_2, ..., bundle_N]
                                                       ↓
                   Main Process: DecodeFromGOPListRGB() → Batch of N Frames (single decode call)
 ```
 
-**Core Concept**
-
-Multiple separate demuxing operations → Single batch decoding operation
-
 **Core APIs**
 
-- {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.GetGOP`: Extract packets (called N times, 
+- {py:meth}`~accvlab.on_demand_video_decoder.CachedGopDecoder.GetGOPList`: Extract serialized GOP bundles (called N times, 
   possibly in parallel)
 - {py:meth}`~accvlab.on_demand_video_decoder.PyNvGopDecoder.DecodeFromGOPListRGB`: Batch decode from list of 
-  packets (called once for entire batch)
-
-**Code Walkthrough**
-
-Initialize decoders:
-
-```python
-# Worker decoder (simulated): for packet extraction
-nv_gop_dec1 = nvc.CreateGopDecoder(maxfiles=6, iGpu=0)
-
-# Main process decoder: for batch decoding
-nv_gop_dec2 = nvc.CreateGopDecoder(maxfiles=6, iGpu=0)
-```
-
-Phase 1 - Multiple demux operations (simulating parallel workers):
-
-```python
-file_list = [
-    "/data/videos/CAM_BACK_LEFT.mp4",
-    "/data/videos/CAM_BACK.mp4",
-    # ... more files
-]
-
-frames = [random.randint(0, 200) for _ in range(len(file_list))]
-
-# Demux executed N times (e.g., in DataLoader __getitem__, called batch_size times)
-packets_list = []
-
-for i in range(len(file_list)):
-    # Each demux operation extracts packets for one video
-    numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-        file_list[i:i+1],
-        frames[i:i+1]
-    )
-    packets_list.append(numpy_data)
-    print(f"Demux {i+1}: Extracted {numpy_data.size} bytes")
-```
-
-Phase 2 - Single batch decode (in main process):
-
-```python
-# Decode executed once for all N demux results
-decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
-    packets_list,  # List of N packet data from multiple demux operations
-    file_list,     # Original file paths
-    frames,        # Target frame IDs
-    as_bgr=True
-)
-
-print(f"Batch decode: {len(decoded_frames)} frames decoded in one call")
-```
+  bundles (called once for entire batch)
 
 **DataLoader Integration Pattern**
 
@@ -1418,7 +1161,8 @@ In a real PyTorch DataLoader:
 ```python
 # In worker process (worker_fn)
 def worker_fn(video_path, frame_id):
-    packets, first_ids, gop_lens = decoder.GetGOP([video_path], [frame_id])
+    gop_list = decoder.GetGOPList([video_path], [frame_id])
+    packets, first_ids, gop_lens = gop_list[0]
     return packets
 
 # In main process collate_fn
@@ -1427,9 +1171,9 @@ def collate_fn(batch):
     file_paths = [item['file_path'] for item in batch]
     frame_ids = [item['frame_id'] for item in batch]
     
-    # Batch decode in main process
+    # Batch decode in main process and convert to PyTorch tensors
     frames = decoder.DecodeFromGOPListRGB(packets_list, file_paths, frame_ids, True)
-    return frames
+    return [torch.as_tensor(frame).clone() for frame in frames]
 ```
 
 **Key Benefits**
@@ -1441,21 +1185,23 @@ def collate_fn(batch):
 
 **Memory Management**
 
-- Keep packet data lifetime short (decode and release)
+- Keep bundle lifetime short (decode and release)
 - Monitor memory usage in worker processes
 - Balance worker count with available memory
 
-**Running the Sample**
+**Where to See It in Action**
 
-```bash
-cd packages/on_demand_video_decoder/samples
-python SampleDecodeFromGopList.py
-```
+- `packages/on_demand_video_decoder/samples/SampleDemuxerDecoderSeparationAccess.py` — the two-stage
+  demux/decode flow within one process
+- `packages/on_demand_video_decoder/samples/SampleSharedGopStore.py` — passing worker-demuxed GOP bundles
+  to the main process via shared memory (see Section 3.5)
+- `packages/on_demand_video_decoder/examples/dataloader_separation_decode/` — a complete PyTorch
+  DataLoader integration
 
 ### 3.5 Shared GOP Store
 
-SharedGopStore provides a cross-process shared memory cache for GOP packet data, designed for PyTorch 
-DataLoader integration. Workers store demuxed GOP data in POSIX shared memory and pass lightweight `GopRef` 
+SharedGopStore provides a cross-process shared memory cache for serialized GOP bundles, designed for PyTorch 
+DataLoader integration. Workers store demuxed GOP bundles in POSIX shared memory and pass lightweight `GopRef` 
 references through the IPC queue, while the main process reads the data as zero-copy numpy views.
 
 #### 3.5.1 Use Cases
@@ -1595,8 +1341,8 @@ If capacity is too small, GOPs may be evicted before the main process can read t
 **GopRef IPC Efficiency**
 
 {py:class}`~accvlab.on_demand_video_decoder.GopRef` is a `NamedTuple` with 4 fields (shm_name, data_size,
-first_frame_id, gop_len). It serializes to ~60 bytes via pickle, compared to ~4-40 KB for the actual GOP
-packet data. This makes DataLoader IPC overhead negligible.
+first_frame_id, gop_len). It serializes to ~60 bytes via pickle, compared to ~4-40 KB for the actual serialized
+GOP bundle. This makes DataLoader IPC overhead negligible.
 
 ```python
 import pickle

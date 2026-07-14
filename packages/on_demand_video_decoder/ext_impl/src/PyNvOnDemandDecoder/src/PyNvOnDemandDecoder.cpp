@@ -51,11 +51,9 @@ static auto ThrowOnCudaError = [](CUresult res, int lineNum = -1) {
 };
 
 void Init_PyNvGopDecoder(py::module& m);
-void Init_PyNvVideoReader(py::module& m);
 void Init_PyNvSampleReader(py::module& m);
 void Init_PyNvBatchAsyncStreamReader(py::module& m);
 PYBIND11_MODULE(_PyNvOnDemandDecoder, m) {
-    Init_PyNvVideoReader(m);
     Init_PyNvGopDecoder(m);
     Init_PyNvSampleReader(m);
     Init_PyNvBatchAsyncStreamReader(m);
@@ -63,11 +61,12 @@ PYBIND11_MODULE(_PyNvOnDemandDecoder, m) {
     m.doc() = R"pbdoc(
         accvlab.on_demand_video_decoder
         ----------
-        .. currentmodule:: PyNvVideoReader
+        .. currentmodule:: accvlab.on_demand_video_decoder
         .. autosummary::
            :toctree: _generate
 
-           PyNvVideoReader
-           
+           PyNvGopDecoder
+           PyNvSampleReader
+           PyNvBatchAsyncStreamReader
     )pbdoc";
 }

@@ -13,21 +13,21 @@
 # limitations under the License.
 
 """
-``accvlab.on_demand_video_decoder`` - GOP Files Decoding Sample
+``accvlab.on_demand_video_decoder`` - GOP Files List API Decoding Sample
 
-This sample demonstrates how to use ``accvlab.on_demand_video_decoder`` library for
-efficient decoding from pre-stored GOP (Group of Pictures) files. This approach
-enables high-performance video decoding by separating the packet extraction and
-decoding phases, allowing for optimized storage and retrieval of video data.
+This sample demonstrates the full GOP persistence workflow:
+1. Extract per-video GOP packet data with ``GetGOPList``
+2. Save each video's data to a binary file with ``SaveGopToFile``
+3. Reload from disk with ``LoadGopsToList``
+4. Batch decode with ``DecodeFromGOPListRGB``
 
 Key Features Demonstrated:
-- Multi-file concurrent decoding (up to configurable limit)
-- Two-phase approach: GOP data storage and subsequent decoding
-- Efficient packet data storage to binary files
-- GPU-accelerated hardware decoding from stored GOP files
-- RGB/BGR/NV12 format output options
-- Device memory output for further processing
-- Optimized workflow for repeated access to same video segments
+- Per-video GOP file storage and independent loading
+- LoadGopsToList API for list-based GOP data management
+- DecodeFromGOPListRGB for batch decoding from GOP list
+- Selective video loading (load only needed videos)
+- GPU-accelerated hardware decoding
+- RGB/BGR format output options
 """
 
 import os
@@ -38,41 +38,30 @@ import accvlab.on_demand_video_decoder as nvc
 
 def SampleDecodeFromGopFiles():
     """
-    Demonstrate GOP files decoding using NVIDIA's GPU-accelerated decoder.
-    This function showcases a two-phase approach for optimal performance:
-    1. Phase 1: Extract and store GOP packet data to binary files
-    2. Phase 2: Load stored GOP files and decode to video frames
+    Demonstrate GOP files list API for per-video decoding control.
 
-    This approach is particularly beneficial for applications that need to
-    repeatedly access the same video segments, as it eliminates the need
-    to re-extract packet data for each decoding operation.
+    This function showcases the full GOP persistence workflow:
+    1. Phase 1: Extract and store GOP data to separate files (one per video)
+    2. Phase 2: Load GOP files as a list and batch decode
+    3. Phase 3: Demonstrate selective loading (partial video set)
 
-    This function showcases the core functionality of accvlab.on_demand_video_decoder for GOP files:
-    1. Packet extraction and storage to binary files
-    2. Loading stored GOP data for efficient decoding
-    3. Converting decoded frames to PyTorch tensors for ML applications
-    4. Handling decoding errors gracefully with comprehensive error reporting
-
-    The example uses a multi-camera setup from nuScenes dataset to demonstrate
-    real-world usage patterns in autonomous driving applications.
+    Benefits of per-video file storage:
+    - Load only needed videos from cache
+    - Per-video cache management (expiration, priority)
+    - Better suited for distributed systems
+    - Reduced memory footprint for selective loading
     """
 
     # Set random seed for reproducible results
-    random.seed(27)
+    random.seed(42)
 
-    # Configuration: Maximum number of video files to decode simultaneously
-    # This should be set based on available GPU memory and processing requirements
+    # Configuration
     max_num_files_to_use = 6
-
-    # Frame range for random frame selection
     frame_min = 0
     frame_max = 200
-
-    # Number of iterations to demonstrate the workflow
-    num_iterations = 5
+    num_iterations = 3
 
     # Sample video files from nuScenes multi-camera dataset
-    # These represent synchronized camera views from autonomous vehicle sensors
     base_dir = os.path.dirname(__file__)
     sample_clip_dir = os.path.join(base_dir, "..", "data", "sample_clip")
     file_list = [
@@ -83,211 +72,240 @@ def SampleDecodeFromGopFiles():
         os.path.join(sample_clip_dir, "moving_shape_triangle_h265.mp4"),
     ]
 
-    print("NVIDIA accvlab.on_demand_video_decoder - GOP Files Decoding Sample")
-    print("=======================================================")
+    camera_names = ["circle", "ellipse", "hexagon", "rect", "triangle"]
+
+    print("=" * 80)
+    print("NVIDIA accvlab.on_demand_video_decoder - GOP Files List API Sample")
+    print("=" * 80)
     print(f"Processing {len(file_list)} video files from multi-camera setup")
-    print("Video resolution: 1600x900 pixels")
+    print(f"Demonstrating GetGOPList + SaveGopToFile + LoadGopsToList + DecodeFromGOPListRGB workflow")
     print(f"Frame range: {frame_min} to {frame_max}")
     print(f"Number of iterations: {num_iterations}")
+    print("=" * 80)
 
     # Initialize NVIDIA GPU video decoders
-    print(f"\nInitializing NVIDIA GPU video decoders...")
+    print("\n📦 Initializing NVIDIA GPU video decoders...")
 
-    # Initialize first decoder for packet extraction and storage
-    print("Creating packet extraction decoder...")
     nv_gop_dec1 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,  # Maximum concurrent files
-        iGpu=0,  # Target GPU device ID (0 for primary GPU)
+        maxfiles=max_num_files_to_use,
+        iGpu=0,
     )
+    print("✓ Packet extraction decoder initialized")
 
-    # Initialize second decoder for GOP file decoding
-    print("Creating GOP file decoder...")
     nv_gop_dec2 = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,  # Maximum concurrent files
-        iGpu=0,  # Target GPU device ID (0 for primary GPU)
+        maxfiles=max_num_files_to_use,
+        iGpu=0,
     )
-
-    print(
-        f"Decoders initialized successfully on GPU 0 with support for {max_num_files_to_use} concurrent files"
-    )
+    print("✓ GOP file decoder initialized")
 
     # Phase 1: Extract and store GOP packet data
-    print(f"\n=== Phase 1: GOP Data Storage ===")
-    print("Extracting packet data and storing to binary files...")
+    print("\n" + "=" * 80)
+    print("PHASE 1: GOP Data Storage (Per-Video Files)")
+    print("=" * 80)
+    print("Extracting packet data and storing to separate binary files...")
 
     stored_gop_files = []
     target_frames = []
 
     for iteration in range(num_iterations):
-        print(f"\n--- Storage Iteration {iteration + 1}/{num_iterations} ---")
+        print(f"\n{'─' * 80}")
+        print(f"Storage Iteration {iteration + 1}/{num_iterations}")
+        print(f"{'─' * 80}")
 
-        # Generate random frame indices for each video file
+        # Generate random frame indices
         frames = [random.randint(frame_min, frame_max) for _ in range(len(file_list))]
         target_frames.append(frames)
-        print(f"Target frame indices: {frames}")
+        print(f"Target frames: {frames}")
 
         try:
-            # Extract packet data for each file and store to binary files
             packet_files = []
-            for i in range(len(file_list)):
-                print(
-                    f"  Extracting packets for file {i+1}/{len(file_list)}: {os.path.basename(file_list[i])}"
-                )
 
-                # Extract packet data for single file and frame
-                numpy_data, first_frame_ids, gop_lens = nv_gop_dec1.GetGOP(
-                    file_list[i : i + 1], frames[i : i + 1]
-                )
+            # Extract GOP data for all videos in one call (one bundle per video)
+            gop_list = nv_gop_dec1.GetGOPList(file_list, frames)
 
-                # Create unique filename for this packet data
-                packet_file = f"./gop_packets_{iteration:02d}_{i:02d}.bin"
+            for i, (numpy_data, first_frame_ids, gop_lens) in enumerate(gop_list):
+                print(f"\n  📹 Video {i + 1}/{len(file_list)}: {camera_names[i]}")
+
+                # Create unique filename for this video's GOP data
+                packet_file = f"./gop_list_{iteration:02d}_{camera_names[i]}.bin"
                 packet_files.append(packet_file)
 
-                # Save packet data to binary file
-                print(f"    Saving packet data to: {packet_file}")
-                nvc.SavePacketsToFile(numpy_data, packet_file)
+                # Save packet data
+                nvc.SaveGopToFile(numpy_data, packet_file)
 
-                # Verify file was created successfully
+                # Verify file creation
                 if not os.path.exists(packet_file):
                     raise FileNotFoundError(f"Packet file not created: {packet_file}")
 
                 file_size = os.path.getsize(packet_file)
-                expected_size = numpy_data.size
-                if file_size != expected_size:
-                    raise ValueError(
-                        f"File size mismatch for {packet_file}: expected {expected_size}, got {file_size}"
-                    )
-
-                print(f"    Packet data saved successfully: {file_size} bytes")
+                print(f"     ✓ Saved: {packet_file}")
+                print(f"     Size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
 
             stored_gop_files.append(packet_files)
-            print(f"Successfully stored GOP data for iteration {iteration + 1}")
+            print(f"\n✓ Successfully stored {len(packet_files)} GOP files for iteration {iteration + 1}")
 
         except Exception as e:
-            # Clean up any created files on error
+            # Clean up on error
             for packet_file in packet_files:
                 if os.path.exists(packet_file):
                     os.remove(packet_file)
 
-            print(f"GOP data storage failed in iteration {iteration + 1}")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error details: {e}")
-            print("Possible causes:")
-            print("  - Video files not accessible at specified paths")
-            print("  - Frame index exceeds video length")
-            print("  - Insufficient disk space for packet storage")
-            print("  - Unsupported video codec or container format")
-            print("  - Permission issues for file creation")
+            print(f"\n❌ GOP data storage failed")
+            print(f"   Error: {type(e).__name__}: {e}")
             return 1
 
-    print(f"\nPhase 1 completed successfully. Stored {len(stored_gop_files)} GOP datasets.")
+    print(f"\n✓ Phase 1 completed: Stored {len(stored_gop_files)} GOP file sets")
 
-    # Phase 2: Load stored GOP files and decode
-    print(f"\n=== Phase 2: GOP File Decoding ===")
-    print("Loading stored GOP files and decoding to video frames...")
+    # Phase 2: Load and decode ALL videos using LoadGopsToList
+    print("\n" + "=" * 80)
+    print("PHASE 2: Load All Videos and Batch Decode")
+    print("=" * 80)
+    print("Using LoadGopsToList + DecodeFromGOPListRGB for batch processing")
 
     for iteration in range(num_iterations):
-        print(f"\n--- Decoding Iteration {iteration + 1}/{num_iterations} ---")
+        print(f"\n{'─' * 80}")
+        print(f"Decoding Iteration {iteration + 1}/{num_iterations}")
+        print(f"{'─' * 80}")
 
         packet_files = stored_gop_files[iteration]
         frames = target_frames[iteration]
 
-        print(f"Loading GOP files for frames: {frames}")
+        print(f"Loading {len(packet_files)} GOP files...")
 
         try:
             """
-            Load stored GOP data and decode to video frames
-
-            LoadGops Parameters:
-            - packet_files: List of binary file paths containing stored packet data
+            LoadGopsToList: Load GOP files as separate bundles
+            (list of numpy arrays, one per file)
 
             Returns:
-            - Merged numpy array containing all packet data for decoding
+            - List of numpy arrays, each containing one video's GOP data
+            - Preserves per-video independence for flexible processing
             """
-            print("Loading stored GOP data...")
-            merged_numpy_data = nv_gop_dec2.LoadGops(packet_files)
+            gop_data_list = nv_gop_dec2.LoadGopsToList(packet_files)
 
-            print(f"Successfully loaded GOP data: {merged_numpy_data.size} bytes")
+            print(f"✓ Loaded {len(gop_data_list)} GOP bundles")
+            for i, gop_data in enumerate(gop_data_list):
+                print(f"   Bundle {i + 1} ({camera_names[i]}): {len(gop_data):,} bytes")
 
             """
-            Decode from loaded GOP data
+            DecodeFromGOPListRGB: Batch decode from GOP list
             
-            DecodeFromGOPRGB Parameters:
-            - packets: Merged packet data from LoadGops
-            - file_path_list: Original video file paths (for metadata)
-            - frame_id_list: Target frame indices
-            - as_bgr: Output format flag (True=BGR, False=RGB)
+            Parameters:
+            - gop_data_list: List of GOP data arrays (from LoadGopsToList)
+            - file_list: List of video file paths
+            - frames: List of frame IDs
+            - as_bgr: Output format (True=BGR, False=RGB)
             
             Returns:
-            - List of decoded frames in host memory as numpy-compatible arrays
-            - Each frame maintains original video resolution and color depth
-            - Frames are ready for immediate processing or tensor conversion
+            - List of decoded RGB/BGR frames
             """
-            print("Decoding frames from GOP data...")
-            decoded_frames = nv_gop_dec2.DecodeFromGOPRGB(merged_numpy_data, file_list, frames, as_bgr=True)
+            print(f"\n🎬 Decoding {len(gop_data_list)} videos...")
+            decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(gop_data_list, file_list, frames, as_bgr=True)
 
-            print(f"Successfully decoded {len(decoded_frames)} frames from GOP data")
+            print(f"✓ Successfully decoded {len(decoded_frames)} frames")
 
-            # Convert decoded frames to PyTorch tensors for ML applications
-            print("Converting frames to PyTorch tensors...")
+            # Convert to PyTorch tensors
             gop_decoded = [torch.unsqueeze(torch.as_tensor(df).clone(), 0) for df in decoded_frames]
 
-            # Display tensor information for first frame (representative of all frames)
             if gop_decoded:
                 first_tensor = gop_decoded[0]
-                print(f"Tensor shape: {first_tensor.shape}")  # Expected: [1, height, width, channels]
-                print(f"Tensor dtype: {first_tensor.dtype}")  # Typically uint8 for image data
-                print(f"Tensor device: {first_tensor.device}")  # CPU (host memory)
-                print(f"Value range: [{first_tensor.min().item()}, {first_tensor.max().item()}]")
-                print(f"Frame dimensions: {first_tensor.shape[1]}x{first_tensor.shape[2]} (HxW)")
-                print(
-                    f"Color channels: {first_tensor.shape[3]} ({'BGR' if first_tensor.shape[3] == 3 else 'Unknown'})"
-                )
+                print(f"\n📊 Frame Analysis:")
+                print(f"   Shape: {first_tensor.shape}")
+                print(f"   Data type: {first_tensor.dtype}")
+                print(f"   Value range: [{first_tensor.min().item()}, {first_tensor.max().item()}]")
+                print(f"   Dimensions: {first_tensor.shape[1]}x{first_tensor.shape[2]} (HxW)")
 
         except Exception as e:
-            print(f"GOP file decoding failed in iteration {iteration + 1}")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error details: {e}")
-            print("Possible causes:")
-            print("  - GOP files not accessible or corrupted")
-            print("  - Insufficient GPU memory for concurrent decoding")
-            print("  - Mismatch between stored packet data and decoder expectations")
-            print("  - Unsupported video codec or container format")
-            print("  - Frame index exceeds video length")
+            print(f"\n❌ Decoding failed")
+            print(f"   Error: {type(e).__name__}: {e}")
             return 1
 
-    # Clean up stored GOP files
-    print(f"\nCleaning up stored GOP files...")
+    # Phase 3: Demonstrate selective loading
+    print("\n" + "=" * 80)
+    print("PHASE 3: Selective Loading Demo")
+    print("=" * 80)
+    print("Loading only a subset of videos (demonstrating key advantage)")
+
+    iteration = 0  # Use first iteration's files
+    packet_files = stored_gop_files[iteration]
+    frames = target_frames[iteration]
+
+    # Select only front cameras (indices 3, 4, 5)
+    selected_indices = [2, 3, 4]
+    selected_files = [packet_files[i] for i in selected_indices]
+    selected_video_paths = [file_list[i] for i in selected_indices]
+    selected_frames = [frames[i] for i in selected_indices]
+    selected_cameras = [camera_names[i] for i in selected_indices]
+
+    print(f"\n🎯 Selective loading: Only {len(selected_indices)} out of {len(packet_files)} videos")
+    print(f"   Selected cameras: {selected_cameras}")
+    print(f"   Target frames: {selected_frames}")
+
+    try:
+        # Load only selected GOP files
+        print(f"\n📂 Loading selected GOP files...")
+        selected_gop_list = nv_gop_dec2.LoadGopsToList(selected_files)
+
+        total_bytes = sum(len(gop) for gop in selected_gop_list)
+        print(f"✓ Loaded {len(selected_gop_list)} GOP bundles ({total_bytes:,} bytes)")
+
+        # Decode only selected videos
+        print(f"\n🎬 Decoding selected videos...")
+        decoded_frames = nv_gop_dec2.DecodeFromGOPListRGB(
+            selected_gop_list, selected_video_paths, selected_frames, as_bgr=True
+        )
+
+        print(f"✓ Successfully decoded {len(decoded_frames)} frames from selected videos")
+
+        print(f"\n💡 Key Advantage:")
+        print(f"   - Loaded only {len(selected_indices)}/{len(packet_files)} videos")
+        print(f"   - Saved memory and I/O by not loading unneeded videos")
+        print(f"   - Perfect for distributed caching and selective processing")
+
+    except Exception as e:
+        print(f"\n❌ Selective loading failed")
+        print(f"   Error: {type(e).__name__}: {e}")
+        return 1
+
+    # Cleanup
+    print("\n" + "=" * 80)
+    print("CLEANUP")
+    print("=" * 80)
+    print("Removing stored GOP files...")
+
     for packet_files in stored_gop_files:
         for packet_file in packet_files:
             if os.path.exists(packet_file):
                 os.remove(packet_file)
-                print(f"  Removed: {packet_file}")
+                print(f"  ✓ Removed: {os.path.basename(packet_file)}")
 
-    print(f"\nGOP files decoding completed successfully!")
+    print("\n" + "=" * 80)
+    print("✓ Sample completed successfully!")
+    print("=" * 80)
     print(f"Processed {num_iterations} iterations with {len(file_list)} files each")
+    print(f"Demonstrated selective loading with {len(selected_indices)} videos")
+
     return 0
 
 
 if __name__ == "__main__":
     """
-    Main entry point for the GOP files decoding demonstration.
+    Main entry point for the GOP file persistence demonstration.
 
-    This sample demonstrates the two-phase approach for efficient video decoding:
-    1. Extract and store GOP packet data to binary files
-    2. Load stored GOP files and decode to video frames
+    Workflow:
+    1. Extract GOP data with GetGOPList and save to separate files (one per video)
+    2. Load GOP files with LoadGopsToList
+    3. Batch decode using DecodeFromGOPListRGB
+    4. Demonstrate selective loading (load only needed videos)
 
-    This approach is particularly beneficial for applications that need to
-    repeatedly access the same video segments, as it eliminates the need
-    to re-extract packet data for each decoding operation.
-
-    Ensure that:
-    1. NVIDIA GPU drivers and CUDA are properly installed
-    2. accvlab.on_demand_video_decoder library is available in Python path
-    3. Sample video files exist at specified paths (or update paths accordingly)
-    4. PyTorch is installed for tensor conversion examples
-    5. Sufficient GPU memory is available for concurrent decoding
-    6. Sufficient disk space is available for GOP file storage
-    7. Write permissions in the current directory for temporary GOP files
+    Prerequisites:
+    1. NVIDIA GPU with hardware video decoding support
+    2. CUDA drivers and runtime properly installed
+    3. accvlab.on_demand_video_decoder library
+    4. PyTorch for tensor conversion demonstrations
+    5. Sample video files at specified paths (or update paths)
+    6. Sufficient disk space for temporary GOP files
+    7. Write permissions in current directory
     """
-    SampleDecodeFromGopFiles()
+    exit_code = SampleDecodeFromGopFiles()
+    exit(exit_code)

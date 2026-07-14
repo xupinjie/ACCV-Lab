@@ -67,7 +67,7 @@ def SampleBatchAsyncStreamAccess():
     # In a real pipeline (e.g. StreamPETR-like training) the V file paths
     # would come from a dataset's per-sample multi-camera record, where each
     # entry maps a camera position (CAM_FRONT, CAM_BACK_LEFT, ...) to its
-    # video file. See ``samples/SampleStreamAsyncAccess.py`` for the 1D
+    # video file. See ``packages/on_demand_video_decoder/samples/SampleStreamAsyncAccess.py`` for the 1D
     # variant of this pattern.
     #
     # The hard-coded "moving shape" clips below ship with this package so

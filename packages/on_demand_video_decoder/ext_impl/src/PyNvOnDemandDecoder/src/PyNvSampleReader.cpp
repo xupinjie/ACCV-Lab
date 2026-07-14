@@ -260,15 +260,16 @@ void Init_PyNvSampleReader(py::module& m) {
         py::arg("num_of_set"), py::arg("num_of_file"), py::arg("iGpu") = 0,
         py::arg("suppressNoColorRangeWarning") = false,
         R"pbdoc(
-            Initialize sample reader with multiple video readers.
-            
-            This factory function creates a PyNvSampleReader instance with the specified
-            configuration for high-throughput multi-file video processing. It's the
-            recommended way to create sample reader instances.
+            Create a GPU-accelerated video decoder optimized for sequential (stream) access.
+
+            This factory function creates a :class:`PyNvSampleReader` instance.
             
             Args:
-                num_of_set: Number of video readers per file for parallel processing
-                num_of_file: Number of files to handle simultaneously
+                num_of_set: Number of samples (video-file sets) to keep cached. Use 1 for
+                            simple sequential access; use your batch size when iterating over
+                            the samples of a batch in a round-robin fashion (the same sample
+                            is accessed again every num_of_set-th call).
+                num_of_file: Maximum number of video files per sample
                 iGpu: GPU device ID to use for decoding (0 for primary GPU)
                 suppressNoColorRangeWarning: Suppress warning when no color range can be extracted from video files (limited/MPEG range is assumed)
             
@@ -281,51 +282,28 @@ void Init_PyNvSampleReader(py::module& m) {
             Example:
                 >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3, iGpu=0)
                 >>> frames = reader.Decode(['v0.mp4', 'v1.mp4'], [0, 10])
+                >>> # Convert to PyTorch tensors on GPU (NV12 layout: (height * 3 // 2, width), uint8)
+                >>> nv12_tensors = [torch.as_tensor(frame).clone() for frame in frames]
             
             Note:
-                The parameter `num_of_set` in `nvc.CreateSampleReader` controls the decoding cycle:
-                - For a specific decoder instance, if you are decoding clipA, after calling `DecodeN12ToRGB` `num_of_set` times, the input returns to clipA again
-                - If you are continuously decoding the same clip, then `num_of_set` can be set to 1
+                The parameter ``num_of_set`` controls the decoding cycle. For a specific
+                decoder instance, if you are decoding clipA, the input returns to clipA
+                again after calling :meth:`PyNvSampleReader.DecodeN12ToRGB` ``num_of_set``
+                times. If you are continuously decoding the same clip, set ``num_of_set``
+                to 1.
             )pbdoc");
 
     // Define the PyNvSampleReader class and its methods
     py::class_<PyNvSampleReader, shared_ptr<PyNvSampleReader>>(m, "PyNvSampleReader", py::module_local(),
                                                                R"pbdoc(
-        NVIDIA GPU-accelerated sample reader for multi-file video processing.
-        
-        This class provides high-performance video reading capabilities using NVIDIA
-        hardware acceleration for multiple video files with multiple readers per file.
-        It's designed for scenarios requiring high-throughput processing of multiple
-        video streams simultaneously.
-        
-        Key Features:
-        
-        - GPU-accelerated decoding using NVIDIA hardware
-        - Multiple video readers per file for parallel processing
-        - Multi-file support with configurable reader pools
-        - RGB and YUV output formats
-        - Resource management with explicit cleanup
-        - Optimized for high-throughput batch processing
-        )pbdoc")
-        .def(py::init<int, int, int, bool>(), py::arg("num_of_set"), py::arg("num_of_file"),
-             py::arg("iGpu") = 0, py::arg("suppressNoColorRangeWarning") = false,
-             R"pbdoc(
-            Initialize sample reader with set of particular parameters.
-            
-            Args:
-                num_of_set: Number of video readers per file for parallel processing
-                num_of_file: Number of files to handle simultaneously
-                iGpu: GPU device ID to use for decoding (0 for primary GPU)
-                suppressNoColorRangeWarning: Suppress warning when no color range can be extracted from video files (limited/MPEG range is assumed)
-            
-            Raises:
-                RuntimeError: If GPU initialization fails or parameters are invalid
+        GPU-accelerated video decoder heavily optimized for sequential (stream) access.
 
-            Note:
-                The parameter `num_of_set` in `nvc.CreateSampleReader` controls the decoding cycle:
-                - For a specific decoder instance, if you are decoding clipA, after calling `DecodeN12ToRGB` `num_of_set` times, the input returns to clipA again
-                - If you are continuously decoding the same clip, then `num_of_set` can be set to 1
-            )pbdoc")
+        Designed for temporal models and sequential video analysis where frames are
+        accessed in order.
+
+        Do not instantiate this class directly. Use :func:`CreateSampleReader` to
+        obtain an instance.
+        )pbdoc")
         .def(
             "Decode",
             [](std::shared_ptr<PyNvSampleReader>& reader, const std::vector<std::string>& filepaths,
@@ -340,28 +318,29 @@ void Init_PyNvSampleReader(py::module& m) {
             },
             py::arg("filepaths"), py::arg("frame_ids"), py::call_guard<py::gil_scoped_release>(),
             R"pbdoc(
-            Decodes video frames into uncompressed YUV data.
-            
-            This method performs GPU-accelerated decoding of specific frames from multiple
-            video files using the configured reader pools. It returns frames in YUV format
-            with metadata.
-            
+            Decodes video frames into YUV data.
+
+            This method performs GPU-accelerated decoding of specific frames from
+            multiple video files.
+
+            If you need RGB/BGR output, use :meth:`DecodeN12ToRGB` instead.
+
             Args:
                 filepaths: List of video file paths to decode from
                 frame_ids: List of frame IDs to decode from the video files
             
             Returns:
-                List of DecodedFrameExt objects containing the decoded frame data.
-                Each frame includes YUV pixel data, metadata, and timing information.
+                List of :class:`DecodedFrameExt` objects containing the decoded frame data.
             
             Raises:
                 RuntimeError: If video files cannot be decoded or frame IDs are invalid
                 ValueError: If frame_ids contain invalid indices or filepaths is empty
             
             Example:
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> frames = reader.Decode(['video1.mp4', 'video2.mp4'], [0, 10])
-                >>> print(f"Decoded {len(frames)} frames")
+                >>> # Convert to PyTorch tensors on GPU (NV12 layout: (height * 3 // 2, width), uint8)
+                >>> nv12_tensors = [torch.as_tensor(frame).clone() for frame in frames]
             )pbdoc")
         .def(
             "DecodeN12ToRGB",
@@ -384,20 +363,21 @@ void Init_PyNvSampleReader(py::module& m) {
             py::call_guard<py::gil_scoped_release>(),
             R"pbdoc(
             Decodes video frames and converts them to RGB/BGR format.
-            
+
             This method performs GPU-accelerated decoding and color space conversion
-            from YUV to RGB/BGR format for multiple video files. It's optimized for
-            machine learning applications that require RGB input data.
-            
+            from YUV to RGB/BGR format for multiple video files.
+
+            If you need asynchronous decoding with prefetching, use
+            :meth:`DecodeN12ToRGBAsync` instead.
+
             Args:
                 filepaths: List of video file paths to decode from
                 frame_ids: List of frame IDs to decode from the video files
                 as_bgr: Whether to output in BGR format (True) or RGB format (False). BGR is commonly used in OpenCV applications.
             
             Returns:
-                List of RGBFrame objects containing the decoded and color-converted frame data.
-                Each frame includes RGB/BGR pixel data and metadata.
-            
+                List of :class:`RGBFrame` objects containing the decoded and color-converted frame data.
+
             Raises:
                 RuntimeError: If video files cannot be decoded or frame IDs are invalid
                 ValueError: If frame_ids contain invalid indices or filepaths is empty
@@ -406,9 +386,10 @@ void Init_PyNvSampleReader(py::module& m) {
 
                 Ref to Sample: `samples/SampleStreamAccess.py`
                 
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> rgb_frames = reader.DecodeN12ToRGB(['video1.mp4', 'video2.mp4'], [0, 10], as_bgr=True)
-                >>> print(f"Decoded {len(rgb_frames)} RGB frames")
+                >>> # Convert to PyTorch tensors on GPU (shape (height, width, 3), uint8)
+                >>> rgb_tensors = [torch.as_tensor(frame).clone() for frame in rgb_frames]
             )pbdoc")
         .def(
             "clearAllReaders", [](std::shared_ptr<PyNvSampleReader>& reader) { reader->clearAllReaders(); },
@@ -420,8 +401,9 @@ void Init_PyNvSampleReader(py::module& m) {
             to free up GPU memory and other system resources.
             
             Example:
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> frames = reader.Decode(['video1.mp4'], [0, 10, 20])
+                >>> tensors = [torch.as_tensor(frame).clone() for frame in frames]
                 >>> reader.clearAllReaders()  # Clean up resources
             )pbdoc")
         .def(
@@ -437,27 +419,29 @@ void Init_PyNvSampleReader(py::module& m) {
             re-allocated on the next decode operation.
             
             Example:
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> frames = reader.Decode(['video1.mp4'], [0, 10, 20])
+                >>> tensors = [torch.as_tensor(frame).clone() for frame in frames]
                 >>> reader.release_device_memory()  # Free GPU memory pool
             )pbdoc")
         .def(
             "release_decoder", [](std::shared_ptr<PyNvSampleReader>& reader) { reader->ReleaseDecoder(); },
             R"pbdoc(
             Release all video decoder instances to free up GPU memory.
-            
-            This method clears all video readers, which releases:
-            - NvDecoder instances and their GPU frame buffers
-            - Each video reader's GPUMemoryPool instances
-            
+
+            This method clears all internal decoding sessions, releasing both the
+            decoder instances and their GPU frame buffers. Note that this also
+            releases the memory pools covered by :meth:`release_device_memory`.
+
             This is useful for freeing GPU memory occupied by decoder instances.
             
             Note: After calling this method, video readers will need to be
             re-created on the next decode operation.
             
             Example:
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> frames = reader.Decode(['video1.mp4'], [0, 10, 20])
+                >>> tensors = [torch.as_tensor(frame).clone() for frame in frames]
                 >>> reader.release_decoder()  # Free decoder instances
             )pbdoc")
         .def(
@@ -474,10 +458,12 @@ void Init_PyNvSampleReader(py::module& m) {
             py::call_guard<py::gil_scoped_release>(),
             R"pbdoc(
             Asynchronously decode video frames and convert them to RGB/BGR format.
-            
+
             This method submits a decode task to a background thread and returns immediately.
             The decoded frames will be stored in an internal buffer and can be retrieved
-            using DecodeN12ToRGBAsyncGetBuffer.
+            using :meth:`DecodeN12ToRGBAsyncGetBuffer`.
+
+            If you do not need asynchronous prefetching, use :meth:`DecodeN12ToRGB` instead.
             
             .. IMPORTANT::
                 **Buffer Clearing Behavior**: Calling this method will clear any pending 
@@ -495,29 +481,6 @@ void Init_PyNvSampleReader(py::module& m) {
                 pool may reuse the same GPU memory allocation for new decode operations, 
                 which could corrupt data if the previous frames are still being referenced.
             
-            .. WARNING::
-                **GPU Memory Management**: The GPU memory used by decoded frames is managed 
-                by an internal GPU memory pool (GPUMemoryPool), not by the RGBFrame objects 
-                themselves. This has important implications:
-                
-                1. **Zero-Copy Memory Access**: RGBFrame objects use zero-copy semantics 
-                   through the ``__cuda_array_interface__`` protocol. When you convert them 
-                   to PyTorch tensors using ``torch.as_tensor(frame)``, the tensor directly 
-                   references the GPU memory from the memory pool without copying.
-                
-                2. **No Explicit Memory Release**: You cannot explicitly release the GPU 
-                   memory of individual RGBFrame objects. The memory is only released when:
-                   - The PyNvVideoReader instance that owns the memory pool is destroyed
-                   - The memory pool is explicitly released via ReleaseMemPools()
-                
-                3. **Memory Lifetime**: Even after calling DecodeN12ToRGBAsyncGetBuffer and 
-                   getting the frames, the GPU memory remains allocated in the memory pool 
-                   until the reader is destroyed or the pool is released. PyTorch tensors 
-                   created from RGBFrame objects will continue to reference this memory.
-            
-            If a previous async decode task is still running, this method will wait for
-            it to complete before starting the new task, and print a warning.
-            
             Args:
                 filepaths: List of video file paths to decode from
                 frame_ids: List of frame IDs to decode from the video files
@@ -530,14 +493,17 @@ void Init_PyNvSampleReader(py::module& m) {
                 previous task to complete and print a warning.
             
             Example:
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+
+                Ref to Sample: `samples/SampleStreamAsyncAccess.py`
+
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> reader.DecodeN12ToRGBAsync(['video1.mp4', 'video2.mp4'], [0, 10], as_bgr=False)
                 >>> # Do other work...
                 >>> frames = reader.DecodeN12ToRGBAsyncGetBuffer(['video1.mp4', 'video2.mp4'], [0, 10], False)
                 >>> # Process frames (memory is zero-copy referenced by PyTorch tensors)
                 >>> tensor_list = [torch.as_tensor(frame, device='cuda').clone() for frame in frames]
                 >>> # Note: GPU memory is still allocated in the memory pool
-                >>> # Memory will be released when reader is destroyed or ReleaseMemPools() is called
+                >>> # Memory will be released when reader is destroyed or release_device_memory() is called
             )pbdoc")
         .def(
             "DecodeN12ToRGBAsyncGetBuffer",
@@ -555,36 +521,8 @@ void Init_PyNvSampleReader(py::module& m) {
             Get decoded frames from the async decode buffer.
             
             This method retrieves decoded frames from the internal buffer that were
-            previously submitted via DecodeN12ToRGBAsync. It validates that the
+            previously submitted via :meth:`DecodeN12ToRGBAsync`. It validates that the
             requested filepaths and frame_ids match the buffered result.
-            
-            .. WARNING::
-                **Zero-Copy GPU Memory Access**: The returned RGBFrame objects use zero-copy 
-                semantics through the ``__cuda_array_interface__`` protocol. This means:
-                
-                1. **Memory Ownership**: The GPU memory is NOT owned by the RGBFrame objects. 
-                   It is managed by an internal GPU memory pool (GPUMemoryPool) within the 
-                   PyNvVideoReader instance.
-                
-                2. **PyTorch Tensor Conversion**: When you convert RGBFrame to PyTorch tensors 
-                   using ``torch.as_tensor(frame, device='cuda')``, PyTorch will create a 
-                   zero-copy tensor that directly references the GPU memory from the memory 
-                   pool. No data is copied.
-                
-                3. **Memory Lifetime**: The GPU memory remains allocated in the memory pool 
-                   even after this method returns. It will NOT be released when:
-                   - RGBFrame objects go out of scope
-                   - PyTorch tensors are deleted
-                   - Python garbage collection runs
-                
-                4. **Memory Release**: The GPU memory is only released when:
-                   - The PyNvSampleReader instance is destroyed
-                   - ReleaseMemPools() is explicitly called on the reader
-                
-                5. **Memory Pool Behavior**: The memory pool reuses the same GPU memory 
-                   allocation across multiple decode operations. Calling this method does 
-                   NOT free the GPU memory - it only removes the frame data from the 
-                   internal buffer queue.
             
             Args:
                 filepaths: List of video file paths (must match the async request)
@@ -592,22 +530,24 @@ void Init_PyNvSampleReader(py::module& m) {
                 as_bgr: BGR format flag (must match the async request)
             
             Returns:
-                List of RGBFrame objects containing the decoded and color-converted frame data.
-                Each frame includes RGB/BGR pixel data and metadata. The GPU memory is 
-                managed by the internal memory pool and uses zero-copy semantics.
+                List of :class:`RGBFrame` objects containing the decoded and color-converted frame data.
+                The GPU memory is managed by the internal memory pool and uses zero-copy semantics.
             
             Raises:
                 RuntimeError: If no matching result is found in buffer, validation fails, or decoding failed
             
             Example:
-                >>> reader = PyNvSampleReader(num_of_set=2, num_of_file=3)
+
+                Ref to Sample: `samples/SampleStreamAsyncAccess.py`
+
+                >>> reader = CreateSampleReader(num_of_set=2, num_of_file=3)
                 >>> reader.DecodeN12ToRGBAsync(['video1.mp4', 'video2.mp4'], [0, 10], as_bgr=False)
                 >>> # Do other work...
                 >>> frames = reader.DecodeN12ToRGBAsyncGetBuffer(['video1.mp4', 'video2.mp4'], [0, 10], False)
                 >>> # Convert to PyTorch tensors (zero-copy, no memory allocation)
                 >>> tensor_list = [torch.as_tensor(frame, device='cuda').clone() for frame in frames]
                 >>> # Note: GPU memory is still in the memory pool, referenced by tensors
-                >>> # Memory will persist until reader is destroyed or ReleaseMemPools() is called
+                >>> # Memory will persist until reader is destroyed or release_device_memory() is called
             )pbdoc");
 }
 
