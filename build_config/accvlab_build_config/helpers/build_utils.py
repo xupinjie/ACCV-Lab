@@ -306,20 +306,25 @@ def _format_torch_cuda_arch_list(architectures: List[str]) -> str:
     Returns:
         str: Semicolon-separated architecture names in PyTorch format, for
         example ``"9.0"`` or ``"9.0;10.3"``.
+
+    Raises:
+        ValueError: If an architecture is not in compact or PyTorch format.
     """
     formatted: List[str] = []
     for arch in architectures:
         arch = arch.strip()
         if not arch:
             continue
-        if re.match(r"^\d+\.\d", arch):
+        if re.fullmatch(r"\d+\.\d[a-z]?", arch):
             formatted.append(arch)
             continue
 
-        match = re.match(r"^(\d+)([a-z]?)$", arch)
+        match = re.fullmatch(r"(\d+)([a-z]?)", arch)
         if not match:
-            formatted.append(arch)
-            continue
+            raise ValueError(
+                f"Invalid CUDA architecture {arch!r}; expected compact format such as "
+                "'90' or '120a', or PyTorch format such as '9.0' or '12.0a'."
+            )
 
         digits, suffix = match.group(1), match.group(2)
         if len(digits) == 1:
@@ -508,29 +513,6 @@ def get_compile_flags(config, cuda_info, include_dirs=None):
         flags['nvcc'] = [f for f in flags['nvcc'] if f]
 
     return flags
-
-
-def run_external_build(
-    package_dir: str, ext_impl_dir: str = 'ext_impl', build_script_name: str = 'build_and_copy.sh'
-):
-    """
-    Run the external build script if it exists.
-
-    Args:
-        package_dir (str): Path to the package directory.
-        ext_impl_dir (str): Path to the external implementation directory (relative to `package_dir`).
-        build_script_name (str): Name of the build script.
-    """
-
-    build_script = Path(package_dir) / ext_impl_dir / build_script_name
-    if build_script.exists():
-        try:
-            subprocess.run(['bash', str(build_script)], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error running external build script: {e}")
-            raise
-    else:
-        print(f"No external build script found at {build_script}")
 
 
 def get_abs_setup_dir(filename: str) -> Path:
