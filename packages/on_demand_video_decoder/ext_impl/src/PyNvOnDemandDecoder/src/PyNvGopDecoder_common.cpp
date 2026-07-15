@@ -483,8 +483,6 @@ void PyNvGopDecoder::DecProc(AVColorRange color_range, NvDecoder* decoder,
                    << " is different with number of frame id:" << std::to_string(sorted_frame_ids.size());
     }
 
-    CUDA_DRVAPI_CALL(cuStreamSynchronize(decoder->GetStream()));
-
     nvtxRangePop();
 }
 
@@ -639,6 +637,10 @@ int PyNvGopDecoder::InitializeDecoders(const std::vector<int>& codec_ids) {
     for (int i = 0; i < num_of_files; ++i) {
         nvtxRangePushA("Decoder creation");
         if (i >= this->vdec.size()) {
+            // NvDecoder must be constructed with this->cu_stream so that NvDecoder::GetStream()
+            // returns the same stream.  main_decode synchronizes this->cu_stream (not each
+            // decoder's stream individually) — if these ever diverge, decoded frames may be
+            // returned before GPU writes complete.
             std::unique_ptr<NvDecoder> dec(new NvDecoder(this->cu_stream, this->cu_context, true,
                                                          static_cast<cudaVideoCodec>(codec_ids[i]), false,
                                                          true, false));

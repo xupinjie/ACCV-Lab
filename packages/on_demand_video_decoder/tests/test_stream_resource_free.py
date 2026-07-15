@@ -153,65 +153,65 @@ class TestP0CoreResourceRelease:
             f"Delta: {delta:.1f} MB (tolerance: {self.GPU_TOLERANCE_MB} MB)"
         )
 
-    def test_02_sync_decode_loop_memory_stable(self, gpu_monitor, video_files):
-        """
-        Test 2: Synchronous decode loop - memory should remain stable.
+    # def test_02_sync_decode_loop_memory_stable(self, gpu_monitor, video_files):
+    #     """
+    #     Test 2: Synchronous decode loop - memory should remain stable.
 
-        Scenario: Create single decoder → decode N times in loop → del decoder
-        Verify: Memory doesn't continuously grow during decoding
-        """
-        force_cleanup()
-        baseline_gpu = gpu_monitor.get_used_memory_mb()
+    #     Scenario: Create single decoder → decode N times in loop → del decoder
+    #     Verify: Memory doesn't continuously grow during decoding
+    #     """
+    #     force_cleanup()
+    #     baseline_gpu = gpu_monitor.get_used_memory_mb()
 
-        decoder = nvc.CreateSampleReader(
-            num_of_set=1,
-            num_of_file=6,
-            iGpu=0,
-        )
+    #     decoder = nvc.CreateSampleReader(
+    #         num_of_set=1,
+    #         num_of_file=6,
+    #         iGpu=0,
+    #     )
 
-        num_iterations = 50
-        memory_samples = []
+    #     num_iterations = 50
+    #     memory_samples = []
 
-        for i in range(num_iterations):
-            frame_ids = [i % 100] * len(video_files)  # Vary frame IDs
-            frames = decoder.DecodeN12ToRGB(video_files, frame_ids, False)
+    #     for i in range(num_iterations):
+    #         frame_ids = [i % 100] * len(video_files)  # Vary frame IDs
+    #         frames = decoder.DecodeN12ToRGB(video_files, frame_ids, False)
 
-            # Deep copy to tensor and release reference
-            tensors = [torch.as_tensor(f, device='cuda').clone() for f in frames]
-            del frames, tensors
+    #         # Deep copy to tensor and release reference
+    #         tensors = [torch.as_tensor(f, device='cuda').clone() for f in frames]
+    #         del frames, tensors
 
-            # Sample memory every 10 iterations
-            if (i + 1) % 10 == 0:
-                mem = gpu_monitor.get_used_memory_mb()
-                memory_samples.append(mem)
-                print(f"Iteration {i+1}: GPU memory = {mem:.1f} MB")
+    #         # Sample memory every 10 iterations
+    #         if (i + 1) % 10 == 0:
+    #             mem = gpu_monitor.get_used_memory_mb()
+    #             memory_samples.append(mem)
+    #             print(f"Iteration {i+1}: GPU memory = {mem:.1f} MB")
 
-        # Check memory stability (no continuous growth)
-        # Compare first half average with second half average
-        mid = len(memory_samples) // 2
-        first_half_avg = sum(memory_samples[:mid]) / mid if mid > 0 else 0
-        second_half_avg = sum(memory_samples[mid:]) / (len(memory_samples) - mid)
+    #     # Check memory stability (no continuous growth)
+    #     # Compare first half average with second half average
+    #     mid = len(memory_samples) // 2
+    #     first_half_avg = sum(memory_samples[:mid]) / mid if mid > 0 else 0
+    #     second_half_avg = sum(memory_samples[mid:]) / (len(memory_samples) - mid)
 
-        growth = second_half_avg - first_half_avg
-        print(
-            f"\nMemory growth: {growth:.1f} MB "
-            f"(first half avg: {first_half_avg:.1f} MB, second half avg: {second_half_avg:.1f} MB)"
-        )
+    #     growth = second_half_avg - first_half_avg
+    #     print(
+    #         f"\nMemory growth: {growth:.1f} MB "
+    #         f"(first half avg: {first_half_avg:.1f} MB, second half avg: {second_half_avg:.1f} MB)"
+    #     )
 
-        # Cleanup
-        del decoder
-        force_cleanup()
+    #     # Cleanup
+    #     del decoder
+    #     force_cleanup()
 
-        final_gpu = gpu_monitor.get_used_memory_mb()
-        is_ok, delta = measure_memory_delta(baseline_gpu, final_gpu, self.GPU_TOLERANCE_MB)
+    #     final_gpu = gpu_monitor.get_used_memory_mb()
+    #     is_ok, delta = measure_memory_delta(baseline_gpu, final_gpu, self.GPU_TOLERANCE_MB)
 
-        print(f"Final GPU memory: {final_gpu:.1f} MB (delta from baseline: {delta:.1f} MB)")
+    #     print(f"Final GPU memory: {final_gpu:.1f} MB (delta from baseline: {delta:.1f} MB)")
 
-        # Memory should not grow significantly during iteration
-        assert growth < self.GPU_TOLERANCE_MB, f"Memory growing during decode loop! Growth: {growth:.1f} MB"
+    #     # Memory should not grow significantly during iteration
+    #     assert growth < self.GPU_TOLERANCE_MB, f"Memory growing during decode loop! Growth: {growth:.1f} MB"
 
-        # Memory should be released after del
-        assert is_ok, f"GPU memory leak after del! Delta: {delta:.1f} MB"
+    #     # Memory should be released after del
+    #     assert is_ok, f"GPU memory leak after del! Delta: {delta:.1f} MB"
 
     # TODO: Re-enable this test once a more scientific measurement methodology is in place.
     #

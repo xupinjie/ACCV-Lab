@@ -414,7 +414,8 @@ void PyNvGopDecoder::decode_from_gop_list(const std::vector<const uint8_t*>& dat
                                           const std::vector<std::string>& filepaths,
                                           const std::vector<int>& frame_ids, bool convert_to_rgb, bool as_bgr,
                                           std::vector<DecodedFrameExt>* out_if_no_color_conversion,
-                                          std::vector<RGBFrame>* out_if_color_converted) {
+                                          std::vector<RGBFrame>* out_if_color_converted,
+                                          bool skip_final_sync) {
     if (convert_to_rgb) {
         if (out_if_color_converted == nullptr || out_if_no_color_conversion != nullptr) {
             throw std::invalid_argument(
@@ -570,7 +571,7 @@ void PyNvGopDecoder::decode_from_gop_list(const std::vector<const uint8_t*>& dat
 
     int st = main_decode(color_ranges_all, codec_ids_all, widths_all, heights_all, frame_sizes_all, filepaths,
                          frame_ids, convert_to_rgb, as_bgr, vpacket_queue, out_if_no_color_conversion,
-                         out_if_color_converted);
+                         out_if_color_converted, skip_final_sync);
     if (st != 0) {
         nvtxRangePop();
         throw std::runtime_error("[ERROR] main_decode failed.");
@@ -584,7 +585,8 @@ int PyNvGopDecoder::main_decode(
     std::vector<int>& heights, std::vector<int>& frame_sizes, const std::vector<std::string>& filepaths,
     const std::vector<int>& frame_ids, bool convert_to_rgb, bool as_bgr,
     std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>>& vpacket_queue,
-    std::vector<DecodedFrameExt>* out_if_no_color_conversion, std::vector<RGBFrame>* out_if_color_converted) {
+    std::vector<DecodedFrameExt>* out_if_no_color_conversion, std::vector<RGBFrame>* out_if_color_converted,
+    bool skip_final_sync) {
     // start decoding process
     int st = 0;
 
@@ -667,13 +669,20 @@ int PyNvGopDecoder::main_decode(
         }
     }
 
-    for (int i = 0; i < total_frames; ++i) {
 #ifndef PROCESS_SYNC
-        // sync all decoders
-        for (int i = 0; i < total_frames; ++i) {
-            decode_runners[i].join();
+    // Join all runners first; exceptions trigger force_join_all() before propagating.
+    for (int j = 0; j < total_frames; ++j) {
+        try {
+            decode_runners[j].join();
+        } catch (const std::exception& e) {
+            this->force_join_all();
+            LOG(ERROR) << "decode_runners[" << j << "].join() failed: " << e.what();
+            return -1;
         }
+    }
 #endif
+
+    for (int i = 0; i < total_frames; ++i) {
         if (convert_to_rgb) {
             if (rgb_frames[i].empty()) {
                 this->force_join_all();
@@ -689,6 +698,14 @@ int PyNvGopDecoder::main_decode(
             }
             (*out_if_no_color_conversion)[i] = std::move(decodedFrames[i][0]);
         }
+    }
+
+    // Single sync on this->cu_stream covers all NvDecoders because every NvDecoder in vdec[]
+    // is constructed with this->cu_stream (see PyNvGopDecoder_common.cpp).  If any NvDecoder
+    // were ever constructed with a different stream, this sync would not cover its GPU writes
+    // and callers could observe incomplete frames.
+    if (!skip_final_sync) {
+        CUDA_DRVAPI_CALL(cuStreamSynchronize(this->cu_stream));
     }
     return 0;
 }

@@ -103,7 +103,7 @@ User-facing docs (`docs/`, `packages/*/docs/`, public-class docstrings) describe
 Bad (jargon / impl detail leaked to user):
   - put() acquires an flock for atomicity (double-check after acquiring the lock)
   - Returns the original decoder
-  - Uses C++ GetGOP under the hood
+  - Uses C++ GetGOPList under the hood
 
 Good:
   - put() acquires an flock for atomicity
@@ -184,7 +184,7 @@ Good:
     #
     # In a real pipeline, gop_first_frame and gop_len would come from a
     # demuxer (e.g. GetGOPList returning first_frame_ids / gop_lens).
-    # See samples/SampleSeparationAccessGOPListAPI.py for an end-to-end
+    # See samples/SampleDemuxerDecoderSeparationAccess.py for an end-to-end
     # example. Hard-coded values here keep the demo dependency-free.
     tasks = [...]
 ```

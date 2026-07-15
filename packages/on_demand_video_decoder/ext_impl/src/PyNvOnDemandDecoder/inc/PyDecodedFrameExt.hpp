@@ -71,14 +71,16 @@ struct DecodedFrameExt : public DecodedFrame {
         py::class_<DecodedFrameExt, std::shared_ptr<DecodedFrameExt>>(m, "DecodedFrameExt")
             .def_readonly("timestamp", &DecodedFrameExt::timestamp)
             //.def_readonly("chroma_format", &DecodedFrameExt::chroma_format)
-            .def_readonly("format", &DecodedFrameExt::format)
+            .def_property_readonly(
+                "format",
+                [](std::shared_ptr<DecodedFrameExt>& self) { return static_cast<int>(self->format); })
             .def_readonly("color_range", &DecodedFrameExt::color_range)
             .def("__repr__",
                  [](std::shared_ptr<DecodedFrameExt>& self) {
                      std::stringstream ss;
                      ss << "<DecodedFrameExt [";
                      ss << "timestamp=" << self->timestamp;
-                     ss << ", format=" << py::str(py::cast(self->format));
+                     ss << ", format=" << static_cast<int>(self->format);
                      // ss << ", chroma_format=" <<
                      // py::str(py::cast(self->chroma_format));
                      ss << ", color_range=" << py::str(py::cast(self->color_range));

@@ -413,6 +413,11 @@ void PyNvBatchAsyncStreamReader::Decode(const std::vector<std::string>& filepath
                         const size_t W = std::get<1>(ref_shape[v]);
                         v_bytes[v] = H * W * 3;
 
+                        // TODO: eliminate this D2D copy by having the underlying VideoReader write
+                        // directly into agg_pools[v]. Requires GPUMemoryPool move semantics and a
+                        // way to inject an external pool into PyNvVideoReader before decoding.
+                        // Peak GPU memory drops from (V+1)*F*frame_bytes to V*F*frame_bytes and
+                        // the cuStreamSynchronize below can be removed.
                         agg_pools[v].EnsureSizeAndSoftReset(static_cast<size_t>(F) * v_bytes[v], false);
                     } else {
                         // Subsequent frames from the same video must keep the

@@ -75,7 +75,8 @@ class __attribute__((visibility("default"))) PyNvGopDecoder {
 class PyNvGopDecoder {
 #endif
    public:
-    PyNvGopDecoder(int iMaxFileNum = 100, int iGpu = 0, bool bSuppressNoColorRangeWarning = false);
+    PyNvGopDecoder(int iMaxFileNum = 100, int iGpu = 0, bool bSuppressNoColorRangeWarning = false,
+                   CUstream external_stream = nullptr);
 
     ~PyNvGopDecoder();
 
@@ -144,7 +145,7 @@ class PyNvGopDecoder {
                               const std::vector<std::string>& filepaths, const std::vector<int>& frame_ids,
                               bool convert_to_rgb, bool as_bgr,
                               std::vector<DecodedFrameExt>* out_if_no_color_conversion,
-                              std::vector<RGBFrame>* out_if_color_converted);
+                              std::vector<RGBFrame>* out_if_color_converted, bool skip_final_sync = false);
 
     /**
      * Load GOP data from multiple binary files in parallel
@@ -262,7 +263,7 @@ class PyNvGopDecoder {
         const std::vector<int>& frame_ids, bool convert_to_rgb, bool as_bgr,
         std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>>& vpacket_queue,
         std::vector<DecodedFrameExt>* out_if_no_color_conversion,
-        std::vector<RGBFrame>* out_if_color_converted);
+        std::vector<RGBFrame>* out_if_color_converted, bool skip_final_sync = false);
 
     /**
      * Perform GOP-based video demuxing and packet extraction for high-performance parallel decoding
@@ -644,6 +645,7 @@ class PyNvGopDecoder {
     bool destroy_context = false;
     CUcontext cu_context = NULL;
     CUstream cu_stream = NULL;
+    bool owns_stream = true;
     int gpu_id = 0;
 
     std::vector<std::unique_ptr<NvDecoder>> vdec;

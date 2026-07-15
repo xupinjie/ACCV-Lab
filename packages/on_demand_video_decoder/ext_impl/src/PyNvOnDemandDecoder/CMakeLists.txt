@@ -56,6 +56,7 @@ set(PY_SOURCES
       src/PyNvVideoReader.cpp
       src/PyNvSampleReader.cpp
       src/PyNvBatchAsyncStreamReader.cpp
+      src/PyNvBatchAsyncGopDecoder.cpp
       src/PyNvGopDemuxer.cpp
       src/PyRGBFrame.cpp
       src/GPUMemoryPool.cpp
