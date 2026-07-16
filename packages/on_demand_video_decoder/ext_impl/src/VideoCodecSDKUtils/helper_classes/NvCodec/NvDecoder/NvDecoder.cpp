@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <utility>
 
 #include "../../../Interface/nvcuvid.h"
 #include "NvDecoder/NvDecoder.h"
@@ -46,6 +47,33 @@ simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger(
         }                                                                                                                        \
     }                                                                                                                            \
     while (0)
+
+namespace {
+
+template <typename Cleanup>
+class ScopeExit {
+public:
+    explicit ScopeExit(Cleanup cleanup) : cleanup_(std::move(cleanup)) {}
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+    ~ScopeExit() noexcept {
+        if (active_) {
+            cleanup_();
+        }
+    }
+
+    void Dismiss() noexcept { active_ = false; }
+
+private:
+    Cleanup cleanup_;
+    bool active_ = true;
+};
+
+template <typename Cleanup>
+ScopeExit(Cleanup) -> ScopeExit<Cleanup>;
+
+}  // namespace
 
 static const char * GetVideoCodecString(cudaVideoCodec eCodec) {
     static struct {
@@ -693,9 +721,12 @@ int NvDecoder::HandlePictureDisplay(CUVIDPARSERDISPINFO *pDispInfo) {
     CUdeviceptr dpSrcFrame = 0;
     unsigned int nSrcPitch = 0;
     CUDA_DRVAPI_CALL(cuCtxPushCurrent(m_cuContext));
+    auto contextCleanup = ScopeExit([]() noexcept { cuCtxPopCurrent(NULL); });
     NVTX_SCOPED_RANGE("display")
     NVDEC_API_CALL(m_api.cuvidMapVideoFrame(m_hDecoder, pDispInfo->picture_index, &dpSrcFrame,
         &nSrcPitch, &videoProcessingParameters));
+    auto frameCleanup = ScopeExit(
+        [&]() noexcept { m_api.cuvidUnmapVideoFrame(m_hDecoder, dpSrcFrame); });
 
     CUVIDGETDECODESTATUS DecodeStatus;
     memset(&DecodeStatus, 0, sizeof(DecodeStatus));
@@ -776,14 +807,15 @@ int NvDecoder::HandlePictureDisplay(CUVIDPARSERDISPINFO *pDispInfo) {
         }
     }
     
-    CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
-
     if ((int)m_vTimestamp.size() < m_nDecodedFrame) {
         m_vTimestamp.resize(m_vpFrame.size());
     }
     m_vTimestamp[m_nDecodedFrame - 1] = pDispInfo->timestamp;
 
     NVDEC_API_CALL(m_api.cuvidUnmapVideoFrame(m_hDecoder, dpSrcFrame));
+    frameCleanup.Dismiss();
+    CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
+    contextCleanup.Dismiss();
     return 1;
 }
 
