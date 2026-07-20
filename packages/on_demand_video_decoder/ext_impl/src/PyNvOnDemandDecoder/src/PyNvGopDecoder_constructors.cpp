@@ -118,15 +118,11 @@ void PyNvGopDecoder::ensureCudaContextInitialized() {
     }
     this->destroy_context = false;
 
-    // To do, we can reuse current context, we can check its func
-    // ck(cuCtxGetCurrent(&cuContext));
-    this->cu_context = nullptr;
-    if (!this->cu_context) {
-        CUdevice cuDevice = 0;
-        ck(cuDeviceGet(&cuDevice, this->gpu_id));
-        ck(cuDevicePrimaryCtxRetain(&this->cu_context, cuDevice));
-        this->destroy_context = true;
-    }
+    CUdevice cuDevice = 0;
+    ck(cuDeviceGet(&cuDevice, this->gpu_id));
+    ck(cuDevicePrimaryCtxRetain(&this->cu_context, cuDevice));
+    this->destroy_context = true;
+
     if (!this->cu_context) {
         throw std::domain_error(
             "[ERROR] Failed to create a cuda context. Create a "
@@ -134,11 +130,13 @@ void PyNvGopDecoder::ensureCudaContextInitialized() {
             "named argument 'cudacontext = app_ctx'");
     }
 
-    // Temporarily push context for stream creation, then immediately pop.
-    // This ensures the destructor can run on any thread without issues.
-    ck(cuCtxPushCurrent(this->cu_context));
-    ck(cuStreamCreate(&this->cu_stream, CU_STREAM_DEFAULT));
-    ck(cuCtxPopCurrent(NULL));
+    if (!this->cu_stream) {
+        // No external stream was provided — create one owned by this object.
+        ck(cuCtxPushCurrent(this->cu_context));
+        ck(cuStreamCreate(&this->cu_stream, CU_STREAM_DEFAULT));
+        ck(cuCtxPopCurrent(NULL));
+        // owns_stream remains true (default)
+    }
 }
 
 void PyNvGopDecoder::ensureDemuxRunnersInitialized() {
@@ -175,7 +173,8 @@ void PyNvGopDecoder::ensureMergeRunnersInitialized() {
     }
 }
 
-PyNvGopDecoder::PyNvGopDecoder(int iMaxFileNum, int iGpu, bool bSuppressNoColorRangeWarning)
+PyNvGopDecoder::PyNvGopDecoder(int iMaxFileNum, int iGpu, bool bSuppressNoColorRangeWarning,
+                               CUstream external_stream)
     : max_num_files(iMaxFileNum),
       gpu_id(iGpu),
       suppress_no_color_range_given_warning(bSuppressNoColorRangeWarning) {
@@ -185,6 +184,11 @@ PyNvGopDecoder::PyNvGopDecoder(int iMaxFileNum, int iGpu, bool bSuppressNoColorR
 
     this->last_decoded_frame_infos.resize(this->max_num_files);
     reset_last_decoded_frame_infos(this->last_decoded_frame_infos);
+
+    if (external_stream != nullptr) {
+        this->cu_stream = external_stream;
+        this->owns_stream = false;
+    }
 }
 
 void PyNvGopDecoder::force_join_all() {
@@ -224,7 +228,7 @@ PyNvGopDecoder::~PyNvGopDecoder() {
         // Explicitly release GPU memory pool before automatic member destruction
         gpu_mem_pool.HardRelease();
 
-        if (this->cu_stream) {
+        if (this->cu_stream && this->owns_stream) {
             ck(cuStreamDestroy(this->cu_stream));
         }
 

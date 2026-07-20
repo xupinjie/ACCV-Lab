@@ -84,11 +84,13 @@ __all__ = [
     'PyNvGopDecoder',
     'PyNvSampleReader',
     'PyNvBatchAsyncStreamReader',
+    'PyNvBatchAsyncGopDecoder',
     'FastStreamInfo',
     'DecodedFrameExt',
     'RGBFrame',
     'CreateSampleReader',
     'CreateBatchAsyncStreamReader',
+    'CreateBatchAsyncGopDecoder',
     'GetFastInitInfo',
     'SaveGopToFile',
     # Python decoder with caching

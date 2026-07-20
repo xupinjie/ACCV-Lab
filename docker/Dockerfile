@@ -88,7 +88,7 @@ RUN pip install numpy==1.23.5 \
 
 RUN pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
 
-RUN pip install black
+RUN pip install black==26.5.1
 
 RUN pip install sphinx==8.1.3 \
     sphinx-rtd-theme==3.1.0 \
