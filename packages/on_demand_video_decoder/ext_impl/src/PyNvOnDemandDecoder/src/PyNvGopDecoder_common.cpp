@@ -19,8 +19,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -406,6 +408,13 @@ void PyNvGopDecoder::DecProc(AVColorRange color_range, NvDecoder* decoder,
                              ConcurrentQueue<std::tuple<uint8_t*, int, int>>* packet_queue,
                              const std::vector<int> sorted_frame_ids, bool use_bgr_format,
                              const std::string& filename, LastDecodedFrameInfo& last_decoded_frame_info) {
+    if (sorted_frame_ids.empty()) {
+        throw std::invalid_argument("[ERROR] DecProc requires at least one target frame");
+    }
+    if (p_frames.size() < sorted_frame_ids.size()) {
+        throw std::invalid_argument("[ERROR] DecProc has fewer output buffers than target frames");
+    }
+
     std::stringstream ss;
     ss << "DecProc_Thread: fid[" << sorted_frame_ids[0] << "], " << std::this_thread::get_id();
     nvtxRangePushA(ss.str().c_str());
@@ -438,6 +447,9 @@ void PyNvGopDecoder::DecProc(AVColorRange color_range, NvDecoder* decoder,
             int64_t timestamp = 0;
             pFrame = decoder->GetFrame(&timestamp);
             // LOG(INFO) << "    after get frame, frame_idx: " << frame_idx << " timestamp: " << timestamp;
+            if (frame_id_iter == sorted_frame_ids.end()) {
+                break;
+            }
             if (timestamp % 2 || timestamp / 2 == *frame_id_iter) {
                 OutputFrame output_frame;
                 if constexpr (std::is_same_v<OutputFrame, RGBFrame>) {
@@ -652,6 +664,123 @@ int PyNvGopDecoder::InitializeDecoders(const std::vector<int>& codec_ids) {
     ck(cuCtxPopCurrent(NULL));
 
     nvtxRangePop();  //Initialize Decoders
+    return 0;
+}
+
+int PyNvGopDecoder::AssignGroupedDecoderSlots(const std::vector<GroupedDecoderConfig>& decoder_configs,
+                                              std::vector<size_t>& decoder_slots) {
+    nvtxRangePushA("Assign Grouped Decoder Slots");
+
+    const size_t num_groups = decoder_configs.size();
+    if (num_groups > static_cast<size_t>(max_num_files)) {
+        nvtxRangePop();
+        LOG(ERROR) << "Grouped decoder configuration count exceeds max_num_files";
+        return -1;
+    }
+
+    for (const auto& config : decoder_configs) {
+        // DecodeFromGOPGroupsRGB accepts serialized bytes from Python, so callers
+        // can provide payloads that did not come from GetGOPGroups.  Reject corrupt
+        // dimensions here before they reach NvDecoder or GPU-buffer allocation.
+        if (config.width <= 0 || config.height <= 0 || config.frame_size <= 0) {
+            nvtxRangePop();
+            LOG(ERROR) << "Grouped decoder dimensions and frame sizes must be positive";
+            return -1;
+        }
+    }
+
+    ensureCudaContextInitialized();
+    ensureDecodeRunnersInitialized();
+
+    // Build a transient dictionary over the persistent decoder vector.  The
+    // dictionary is rebuilt each call so it cannot become stale when a slot is
+    // replaced.  Each key maps to multiple slots to support concurrent GOPs
+    // with the same codec and shape.
+    std::map<GroupedDecoderConfig, std::vector<size_t>> available_slots;
+    for (size_t slot_idx = 0; slot_idx < vdec.size(); ++slot_idx) {
+        const int current_width = vdec[slot_idx]->GetCurrentWidth();
+        const int current_height = vdec[slot_idx]->GetCurrentHeight();
+        if (current_width <= 0 || current_height <= 0) {
+            continue;
+        }
+        const GroupedDecoderConfig config{static_cast<int>(vdec[slot_idx]->GetCodec()), current_width,
+                                          current_height, vdec[slot_idx]->GetFrameSize()};
+        available_slots[config].push_back(slot_idx);
+    }
+
+    const size_t unassigned = std::numeric_limits<size_t>::max();
+    decoder_slots.assign(num_groups, unassigned);
+    std::vector<bool> slot_in_use(vdec.size(), false);
+
+    // First reserve every exact match.  Doing this before replacing any slot
+    // avoids an early unmatched group evicting a decoder needed by a later
+    // group in the same call.
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        auto candidates = available_slots.find(decoder_configs[group_idx]);
+        if (candidates == available_slots.end() || candidates->second.empty()) {
+            continue;
+        }
+        const size_t slot_idx = candidates->second.back();
+        candidates->second.pop_back();
+        decoder_slots[group_idx] = slot_idx;
+        slot_in_use[slot_idx] = true;
+    }
+
+    const bool needs_new_decoder =
+        std::find(decoder_slots.begin(), decoder_slots.end(), unassigned) != decoder_slots.end();
+    if (needs_new_decoder) {
+        ck(cuCtxPushCurrent(this->cu_context));
+    }
+
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        if (decoder_slots[group_idx] != unassigned) {
+            continue;
+        }
+
+        size_t slot_idx = unassigned;
+        // Retain decoders for shapes that are not present in the current call,
+        // up to the configured max_num_files cache bound.  Once the pool is
+        // full, replace an idle slot.
+        if (vdec.size() < static_cast<size_t>(max_num_files)) {
+            slot_idx = vdec.size();
+        } else {
+            const auto unused = std::find(slot_in_use.begin(), slot_in_use.end(), false);
+            if (unused != slot_in_use.end()) {
+                slot_idx = static_cast<size_t>(std::distance(slot_in_use.begin(), unused));
+            }
+        }
+        if (slot_idx == unassigned) {
+            if (needs_new_decoder) {
+                ck(cuCtxPopCurrent(NULL));
+            }
+            nvtxRangePop();
+            LOG(ERROR) << "No idle decoder slot is available for grouped decode";
+            return -1;
+        }
+
+        const auto& config = decoder_configs[group_idx];
+        const auto codec = static_cast<cudaVideoCodec>(config.codec_id);
+        nvtxRangePushA("Grouped Decoder Slot Creation");
+        std::unique_ptr<NvDecoder> decoder(new NvDecoder(this->cu_stream, this->cu_context, true, codec,
+                                                         false, true, false, false, nullptr, nullptr, false,
+                                                         config.width, config.height));
+        if (slot_idx == vdec.size()) {
+            vdec.push_back(std::move(decoder));
+            slot_in_use.push_back(true);
+        } else {
+            decode_runners[slot_idx].join();
+            vdec[slot_idx] = std::move(decoder);
+            reset_last_decoded_frame_info(last_decoded_frame_infos[slot_idx]);
+            slot_in_use[slot_idx] = true;
+        }
+        decoder_slots[group_idx] = slot_idx;
+        nvtxRangePop();
+    }
+
+    if (needs_new_decoder) {
+        ck(cuCtxPopCurrent(NULL));
+    }
+    nvtxRangePop();
     return 0;
 }
 

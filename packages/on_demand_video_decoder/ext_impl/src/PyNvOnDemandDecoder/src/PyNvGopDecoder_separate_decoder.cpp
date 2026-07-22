@@ -59,7 +59,7 @@ void PyNvGopDecoder::get_gop_internal(
     }
 
     // lazy loading
-    ensureDemuxRunnersInitialized();
+    ensureDemuxRunnersInitialized(total_frames);
 
     // Initialize demuxers
     st = InitializeDemuxers(filepaths, demuxers, fastStreamInfos);
@@ -578,6 +578,285 @@ void PyNvGopDecoder::decode_from_gop_list(const std::vector<const uint8_t*>& dat
     }
 
     nvtxRangePop();
+}
+
+void PyNvGopDecoder::decode_from_gop_groups(const std::vector<const uint8_t*>& datas,
+                                            const std::vector<size_t>& sizes,
+                                            const std::vector<std::string>& source_names,
+                                            const std::vector<std::vector<int>>& frame_id_groups, bool as_bgr,
+                                            std::vector<RGBFrame>& output) {
+    nvtxRangePushA("DecodeFromGOPGroups");
+
+    const size_t num_groups = datas.size();
+    if (sizes.size() != num_groups || source_names.size() != num_groups ||
+        frame_id_groups.size() != num_groups) {
+        nvtxRangePop();
+        throw std::invalid_argument(
+            "[ERROR] gop_datas, source_names, and frame_id_groups must have the same length");
+    }
+    if (num_groups > static_cast<size_t>(max_num_files)) {
+        nvtxRangePop();
+        throw std::invalid_argument("[ERROR] number of GOP groups exceeds max_num_files");
+    }
+
+    if (num_groups == 0) {
+        output.clear();
+        nvtxRangePop();
+        return;
+    }
+
+    std::vector<int> color_ranges;
+    std::vector<GroupedDecoderConfig> decoder_configs;
+    std::vector<int> gop_lens;
+    std::vector<int> first_frame_ids;
+    std::vector<std::vector<int>> packets_bytes;
+    std::vector<std::vector<int>> decode_idxs;
+    std::vector<const uint8_t*> packet_binary_data_ptrs;
+    std::vector<size_t> packet_binary_data_sizes;
+
+    color_ranges.reserve(num_groups);
+    decoder_configs.reserve(num_groups);
+    gop_lens.reserve(num_groups);
+    first_frame_ids.reserve(num_groups);
+    packets_bytes.reserve(num_groups);
+    decode_idxs.reserve(num_groups);
+    packet_binary_data_ptrs.reserve(num_groups);
+    packet_binary_data_sizes.reserve(num_groups);
+
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        const auto& target_ids = frame_id_groups[group_idx];
+        if (target_ids.empty()) {
+            nvtxRangePop();
+            throw std::invalid_argument("[ERROR] frame_id_groups must not contain an empty group");
+        }
+        if (!std::is_sorted(target_ids.begin(), target_ids.end()) ||
+            std::adjacent_find(target_ids.begin(), target_ids.end()) != target_ids.end()) {
+            nvtxRangePop();
+            throw std::invalid_argument(
+                "[ERROR] frame IDs in each group must be strictly increasing and unique");
+        }
+        if (target_ids.front() < 0) {
+            nvtxRangePop();
+            throw std::invalid_argument("[ERROR] frame IDs must be non-negative");
+        }
+
+        std::vector<int> bundle_color_ranges;
+        std::vector<int> bundle_codec_ids;
+        std::vector<int> bundle_widths;
+        std::vector<int> bundle_heights;
+        std::vector<int> bundle_frame_sizes;
+        std::vector<int> bundle_gop_lens;
+        std::vector<int> bundle_first_frame_ids;
+        std::vector<std::vector<int>> bundle_packets_bytes;
+        std::vector<std::vector<int>> bundle_decode_idxs;
+        std::vector<const uint8_t*> bundle_packet_binary_data_ptrs;
+        std::vector<size_t> bundle_packet_binary_data_sizes;
+
+        const uint32_t frames_in_bundle = parseSerializedPacketData(
+            datas[group_idx], sizes[group_idx], bundle_color_ranges, bundle_codec_ids, bundle_widths,
+            bundle_heights, bundle_frame_sizes, bundle_gop_lens, bundle_first_frame_ids, bundle_packets_bytes,
+            bundle_decode_idxs, bundle_packet_binary_data_ptrs, bundle_packet_binary_data_sizes);
+
+        if (frames_in_bundle != 1) {
+            nvtxRangePop();
+            throw std::invalid_argument("[ERROR] grouped GOP payload must contain exactly one block");
+        }
+        const int64_t first = bundle_first_frame_ids[0];
+        const int64_t end = first + static_cast<int64_t>(bundle_gop_lens[0]);
+        if (target_ids.front() < first || target_ids.back() >= end) {
+            nvtxRangePop();
+            throw std::invalid_argument("[ERROR] grouped GOP payload does not contain every target frame");
+        }
+
+        color_ranges.push_back(bundle_color_ranges[0]);
+        decoder_configs.push_back(
+            {bundle_codec_ids[0], bundle_widths[0], bundle_heights[0], bundle_frame_sizes[0]});
+        gop_lens.push_back(bundle_gop_lens[0]);
+        first_frame_ids.push_back(bundle_first_frame_ids[0]);
+        packets_bytes.push_back(std::move(bundle_packets_bytes[0]));
+        decode_idxs.push_back(std::move(bundle_decode_idxs[0]));
+        packet_binary_data_ptrs.push_back(bundle_packet_binary_data_ptrs[0]);
+        packet_binary_data_sizes.push_back(bundle_packet_binary_data_sizes[0]);
+    }
+
+    std::vector<size_t> decoder_slots;
+    int status = AssignGroupedDecoderSlots(decoder_configs, decoder_slots);
+    if (status != 0) {
+        nvtxRangePop();
+        throw std::runtime_error("[ERROR] AssignGroupedDecoderSlots failed");
+    }
+
+    std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>> vpacket_queue(num_groups);
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        const size_t slot_idx = decoder_slots[group_idx];
+        int skip_packets = 0;
+        const int last_frame_id = last_decoded_frame_infos[slot_idx].frame_id;
+        if (last_decoded_frame_infos[slot_idx].filename != source_names[group_idx] ||
+            last_frame_id < first_frame_ids[group_idx] ||
+            last_frame_id >= first_frame_ids[group_idx] + gop_lens[group_idx] ||
+            last_frame_id >= frame_id_groups[group_idx].front()) {
+            skip_packets = 0;
+        } else {
+            skip_packets = last_decoded_frame_infos[slot_idx].packet_id;
+        }
+        if (skip_packets == 0) {
+            reset_last_decoded_frame_info(last_decoded_frame_infos[slot_idx]);
+        }
+
+        vpacket_queue[group_idx] = std::make_unique<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>();
+        vpacket_queue[group_idx]->setSize(MAX_SIZE);
+
+        size_t offset = 0;
+        for (size_t packet_idx = 0; packet_idx < packets_bytes[group_idx].size(); ++packet_idx) {
+            const int packet_bytes = packets_bytes[group_idx][packet_idx];
+            int decode_idx = decode_idxs[group_idx][packet_idx];
+
+            if (skip_packets > 0) {
+                --skip_packets;
+                if (packet_bytes > 0) {
+                    offset += static_cast<size_t>(packet_bytes);
+                }
+                continue;
+            }
+
+            if (packet_bytes == -1) {
+                vpacket_queue[group_idx]->push_back(std::make_tuple(nullptr, -1, 0));
+            } else if (packet_bytes == 0) {
+                vpacket_queue[group_idx]->push_back(std::make_tuple(nullptr, 0, 0));
+            } else if (packet_bytes > 0) {
+                if (offset + static_cast<size_t>(packet_bytes) > packet_binary_data_sizes[group_idx]) {
+                    nvtxRangePop();
+                    throw std::invalid_argument("[ERROR] GOP packet data is truncated");
+                }
+                uint8_t* video_data = const_cast<uint8_t*>(packet_binary_data_ptrs[group_idx] + offset);
+                offset += static_cast<size_t>(packet_bytes);
+                vpacket_queue[group_idx]->push_back(
+                    std::make_tuple(video_data, packet_bytes, decode_idx * 2));
+            } else {
+                nvtxRangePop();
+                throw std::invalid_argument("[ERROR] invalid negative GOP packet size");
+            }
+        }
+    }
+
+    status = main_decode_groups(color_ranges, decoder_configs, source_names, frame_id_groups, decoder_slots,
+                                as_bgr, vpacket_queue, output);
+    if (status != 0) {
+        nvtxRangePop();
+        throw std::runtime_error("[ERROR] main_decode_groups failed");
+    }
+
+    nvtxRangePop();
+}
+
+int PyNvGopDecoder::main_decode_groups(
+    const std::vector<int>& color_ranges, const std::vector<GroupedDecoderConfig>& decoder_configs,
+    const std::vector<std::string>& source_names, const std::vector<std::vector<int>>& frame_id_groups,
+    const std::vector<size_t>& decoder_slots, bool as_bgr,
+    std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>>& vpacket_queue,
+    std::vector<RGBFrame>& output) {
+    ensureCudaContextInitialized();
+    ensureDecodeRunnersInitialized();
+
+    const size_t num_groups = frame_id_groups.size();
+    if (decoder_configs.size() != num_groups || decoder_slots.size() != num_groups) {
+        LOG(ERROR) << "Grouped decoder configuration or slot mapping size does not match group count";
+        return -1;
+    }
+    std::unordered_set<size_t> unique_slots;
+    for (const size_t slot_idx : decoder_slots) {
+        if (slot_idx >= vdec.size() || !unique_slots.insert(slot_idx).second) {
+            LOG(ERROR) << "Grouped decoder slot mapping contains an invalid or duplicate slot";
+            return -1;
+        }
+    }
+    size_t total_output_frames = 0;
+    std::vector<int> output_widths;
+    std::vector<int> output_heights;
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        total_output_frames += frame_id_groups[group_idx].size();
+        output_widths.insert(output_widths.end(), frame_id_groups[group_idx].size(),
+                             decoder_configs[group_idx].width);
+        output_heights.insert(output_heights.end(), frame_id_groups[group_idx].size(),
+                              decoder_configs[group_idx].height);
+    }
+
+    const std::vector<int> no_frame_sizes;
+    int status = InitGpuMemPool(output_heights, output_widths, no_frame_sizes, true);
+    if (status != 0) {
+        LOG(ERROR) << "InitGpuMemPool failed for grouped GOP decode";
+        return status;
+    }
+    std::vector<std::vector<uint8_t*>> flat_frame_buffers;
+    status = GetFileFrameBuffers(&output_widths, &output_heights, &no_frame_sizes, true, flat_frame_buffers);
+    if (status != 0) {
+        LOG(ERROR) << "GetFileFrameBuffers failed for grouped GOP decode";
+        return status;
+    }
+
+    std::vector<std::vector<uint8_t*>> group_frame_buffers(num_groups);
+    size_t flat_buffer_idx = 0;
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        group_frame_buffers[group_idx].reserve(frame_id_groups[group_idx].size());
+        for (size_t target_idx = 0; target_idx < frame_id_groups[group_idx].size(); ++target_idx) {
+            group_frame_buffers[group_idx].push_back(flat_frame_buffers[flat_buffer_idx++][0]);
+        }
+    }
+
+    std::vector<std::vector<RGBFrame>> rgb_frames(num_groups);
+
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        try {
+            const size_t slot_idx = decoder_slots[group_idx];
+            const AVColorRange color_range = static_cast<AVColorRange>(color_ranges[group_idx]);
+            rgb_frames[group_idx].reserve(frame_id_groups[group_idx].size());
+#ifdef PROCESS_SYNC
+            DecProc<RGBFrame>(color_range, vdec[slot_idx].get(), rgb_frames[group_idx],
+                              group_frame_buffers[group_idx], vpacket_queue[group_idx].get(),
+                              frame_id_groups[group_idx], as_bgr, source_names[group_idx],
+                              last_decoded_frame_infos[slot_idx]);
+#else
+            decode_runners[slot_idx].join();
+            decode_runners[slot_idx].start(PyNvGopDecoder::DecProc<RGBFrame>, color_range,
+                                           vdec[slot_idx].get(), std::ref(rgb_frames[group_idx]),
+                                           group_frame_buffers[group_idx], vpacket_queue[group_idx].get(),
+                                           frame_id_groups[group_idx], as_bgr, source_names[group_idx],
+                                           std::ref(last_decoded_frame_infos[slot_idx]));
+#endif
+        } catch (const std::exception& error) {
+            force_join_all();
+            LOG(ERROR) << "Grouped DecProc failed: " << error.what();
+            return -1;
+        }
+    }
+
+#ifndef PROCESS_SYNC
+    try {
+        for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+            decode_runners[decoder_slots[group_idx]].join();
+        }
+    } catch (const std::exception& error) {
+        force_join_all();
+        LOG(ERROR) << "Grouped decode thread join failed: " << error.what();
+        return -1;
+    }
+#endif
+
+    output.clear();
+    output.reserve(total_output_frames);
+    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+        if (rgb_frames[group_idx].size() != frame_id_groups[group_idx].size()) {
+            force_join_all();
+            LOG(ERROR) << "Grouped RGB decode produced " << rgb_frames[group_idx].size()
+                       << " frames, expected " << frame_id_groups[group_idx].size() << " for group "
+                       << group_idx;
+            return -1;
+        }
+        for (auto& frame : rgb_frames[group_idx]) {
+            output.push_back(std::move(frame));
+        }
+    }
+    return 0;
 }
 
 int PyNvGopDecoder::main_decode(

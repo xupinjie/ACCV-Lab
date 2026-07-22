@@ -39,6 +39,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
+#include <vector>
 
 #define MAX_SIZE 2000
 
@@ -146,6 +148,24 @@ class PyNvGopDecoder {
                               bool convert_to_rgb, bool as_bgr,
                               std::vector<DecodedFrameExt>* out_if_no_color_conversion,
                               std::vector<RGBFrame>* out_if_color_converted, bool skip_final_sync = false);
+
+    /**
+     * Decode multiple target frames from each serialized GOP bundle.
+     *
+     * Each element in datas represents one source/GOP decode task, while the matching
+     * element in frame_id_groups contains every target display frame in that GOP.
+     *
+     * @param datas Serialized GOP buffers, one per source/GOP group
+     * @param sizes Buffer sizes corresponding to datas
+     * @param source_names Stable source names, one per source/GOP group
+     * @param frame_id_groups Target display frame IDs for each GOP group
+     * @param as_bgr Whether RGB output should use BGR channel order
+     * @param output Flat RGB output in group order
+     */
+    void decode_from_gop_groups(const std::vector<const uint8_t*>& datas, const std::vector<size_t>& sizes,
+                                const std::vector<std::string>& source_names,
+                                const std::vector<std::vector<int>>& frame_id_groups, bool as_bgr,
+                                std::vector<RGBFrame>& output);
 
     /**
      * Load GOP data from multiple binary files in parallel
@@ -257,6 +277,25 @@ class PyNvGopDecoder {
     void ReleaseDecoder();
 
    protected:
+    /**
+     * Native decode configuration for one GOP group.
+     *
+     * Keeping these fields together avoids four parallel vectors whose indices
+     * must stay aligned.  The ordering operator also makes the configuration a
+     * direct key in the persistent decoder-slot lookup table.
+     */
+    struct GroupedDecoderConfig {
+        int codec_id;
+        int width;
+        int height;
+        int frame_size;
+
+        bool operator<(const GroupedDecoderConfig& other) const {
+            return std::tie(codec_id, width, height, frame_size) <
+                   std::tie(other.codec_id, other.width, other.height, other.frame_size);
+        }
+    };
+
     int main_decode(
         const std::vector<int>& color_ranges, const std::vector<int>& codec_ids, std::vector<int>& widths,
         std::vector<int>& heights, std::vector<int>& frame_sizes, const std::vector<std::string>& filepaths,
@@ -264,6 +303,25 @@ class PyNvGopDecoder {
         std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>>& vpacket_queue,
         std::vector<DecodedFrameExt>* out_if_no_color_conversion,
         std::vector<RGBFrame>* out_if_color_converted, bool skip_final_sync = false);
+
+    /**
+     * Match grouped decode requests to persistent decoder slots by decode
+     * configuration instead of by input-list position.  A key can own several
+     * slots because groups with the same shape may decode concurrently.
+     *
+     * @param decoder_configs Codec and native shape for each input group
+     * @param decoder_slots Output mapping from group index to decoder slot
+     * @return 0 on success, non-zero error code on failure
+     */
+    int AssignGroupedDecoderSlots(const std::vector<GroupedDecoderConfig>& decoder_configs,
+                                  std::vector<size_t>& decoder_slots);
+
+    int main_decode_groups(
+        const std::vector<int>& color_ranges, const std::vector<GroupedDecoderConfig>& decoder_configs,
+        const std::vector<std::string>& source_names, const std::vector<std::vector<int>>& frame_id_groups,
+        const std::vector<size_t>& decoder_slots, bool as_bgr,
+        std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>>& vpacket_queue,
+        std::vector<RGBFrame>& output);
 
     /**
      * Perform GOP-based video demuxing and packet extraction for high-performance parallel decoding
@@ -660,7 +718,7 @@ class PyNvGopDecoder {
 
     // Lazy loading functions
     void ensureCudaContextInitialized();
-    void ensureDemuxRunnersInitialized();
+    void ensureDemuxRunnersInitialized(size_t required_count);
     void ensureDecodeRunnersInitialized();
     void ensureMergeRunnersInitialized();
 

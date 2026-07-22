@@ -139,13 +139,14 @@ void PyNvGopDecoder::ensureCudaContextInitialized() {
     }
 }
 
-void PyNvGopDecoder::ensureDemuxRunnersInitialized() {
-    if (!demux_runners.empty()) {
-        return;  // Already initialized
+void PyNvGopDecoder::ensureDemuxRunnersInitialized(size_t required_count) {
+    if (required_count > static_cast<size_t>(max_num_files)) {
+        throw std::invalid_argument("required demux runners exceed max_num_files");
     }
 
+    // max_num_files is a request-capacity limit, not an eager thread count.
     demux_runners.reserve(max_num_files);
-    for (size_t i = 0; i < max_num_files; ++i) {
+    while (demux_runners.size() < required_count) {
         demux_runners.emplace_back();
     }
 }
@@ -604,6 +605,202 @@ void Init_PyNvGopDecoder(py::module& m) {
                 ...     print(f"  GOP lengths: {gop_lens}")
             )pbdoc")
         .def(
+            "GetGOPGroups",
+            [](std::shared_ptr<PyNvGopDecoder>& dec, const py::list& requests) {
+                struct SourceRequest {
+                    std::string filepath;
+                    // Sorted, unique decode targets. The original request order and
+                    // duplicates are retained separately in original_positions.
+                    std::vector<int> frame_ids;
+                    std::map<int, std::vector<int>> original_positions;
+                };
+                struct GroupResult {
+                    // Serialized demux output for one GOP: encoded packet bytes plus lookup metadata,
+                    // not decoded pixels. It becomes the group's ``gop_data`` returned to Python.
+                    SerializedPacketBundle bundle;
+                    // Unique requested frame IDs inside this GOP, ordered for decoding.
+                    std::vector<int> frame_ids;
+                    // frame_positions[i] contains every index where frame_ids[i] appeared in the
+                    // original request. Example: [8, 6, 8] becomes IDs [6, 8] with [[1], [0, 2]].
+                    std::vector<std::vector<int>> frame_positions;
+                    // Half-open display-frame range [first_frame_id,
+                    // first_frame_id + gop_len) covered by bundle.
+                    int first_frame_id;
+                    int gop_len;
+                };
+
+                std::vector<SourceRequest> source_requests;
+                source_requests.reserve(requests.size());
+                for (const auto& item : requests) {
+                    const py::dict request = py::cast<py::dict>(item);
+                    SourceRequest source_request{
+                        request["filepath"].cast<std::string>(),
+                        request["frame_ids"].cast<std::vector<int>>(),
+                        {},
+                    };
+                    for (size_t frame_position = 0; frame_position < source_request.frame_ids.size();
+                         ++frame_position) {
+                        const int frame_id = source_request.frame_ids[frame_position];
+                        if (frame_id < 0) {
+                            throw std::invalid_argument("frame IDs must be non-negative");
+                        }
+                        source_request.original_positions[frame_id].push_back(
+                            static_cast<int>(frame_position));
+                    }
+
+                    source_request.frame_ids.clear();
+                    source_request.frame_ids.reserve(source_request.original_positions.size());
+                    for (const auto& [frame_id, _] : source_request.original_positions) {
+                        source_request.frame_ids.push_back(frame_id);
+                    }
+                    source_requests.push_back(std::move(source_request));
+                }
+
+                std::vector<std::vector<GroupResult>> results_by_source(source_requests.size());
+                // Index of the next sorted frame ID not yet assigned to a GOP for
+                // each source request.
+                std::vector<size_t> next_frame_indices(source_requests.size(), 0);
+                {
+                    py::gil_scoped_release release;
+                    while (true) {
+                        // get_gop_list extracts one GOP per source in a call. A source
+                        // stays pending while it still has target IDs beyond the GOPs
+                        // extracted in previous rounds.
+                        std::vector<size_t> pending_source_indices;
+                        for (size_t source_idx = 0; source_idx < source_requests.size(); ++source_idx) {
+                            if (next_frame_indices[source_idx] <
+                                source_requests[source_idx].frame_ids.size()) {
+                                pending_source_indices.push_back(source_idx);
+                            }
+                        }
+                        if (pending_source_indices.empty()) {
+                            break;
+                        }
+
+                        std::vector<std::string> pending_filepaths;
+                        std::vector<int> representative_ids;
+                        pending_filepaths.reserve(pending_source_indices.size());
+                        representative_ids.reserve(pending_source_indices.size());
+                        for (const size_t source_idx : pending_source_indices) {
+                            const auto& source_request = source_requests[source_idx];
+                            pending_filepaths.push_back(source_request.filepath);
+                            // The first unassigned target locates the next GOP for
+                            // this source; all remaining targets in that GOP are
+                            // consumed together below.
+                            representative_ids.push_back(
+                                source_request.frame_ids[next_frame_indices[source_idx]]);
+                        }
+
+                        auto bundles = dec->get_gop_list(pending_filepaths, representative_ids);
+                        // get_gop_list promises one result per input path in the same
+                        // order. Check that contract before mapping round-local results
+                        // back to their original request indices.
+                        if (bundles.size() != pending_source_indices.size()) {
+                            throw std::runtime_error(
+                                "GetGOPList returned a different number of bundles than requested");
+                        }
+
+                        for (size_t pending_idx = 0; pending_idx < pending_source_indices.size();
+                             ++pending_idx) {
+                            const size_t source_idx = pending_source_indices[pending_idx];
+                            auto& bundle = bundles[pending_idx];
+                            if (bundle.first_frame_ids.size() != 1 || bundle.gop_lens.size() != 1) {
+                                throw std::runtime_error(
+                                    "GetGOPList returned invalid per-source GOP metadata");
+                            }
+
+                            const int first_frame_id = bundle.first_frame_ids[0];
+                            const int gop_len = bundle.gop_lens[0];
+                            const int64_t gop_end =
+                                static_cast<int64_t>(first_frame_id) + static_cast<int64_t>(gop_len);
+                            const auto& source_request = source_requests[source_idx];
+                            const int representative_id =
+                                source_request.frame_ids[next_frame_indices[source_idx]];
+                            if (gop_len <= 0 || representative_id < first_frame_id ||
+                                representative_id >= gop_end) {
+                                throw std::runtime_error(
+                                    "demuxed GOP range does not contain its representative frame");
+                            }
+
+                            std::vector<int> grouped_ids;
+                            std::vector<std::vector<int>> grouped_positions;
+                            while (next_frame_indices[source_idx] < source_request.frame_ids.size()) {
+                                const int frame_id = source_request.frame_ids[next_frame_indices[source_idx]];
+                                if (frame_id >= gop_end) {
+                                    break;
+                                }
+                                if (frame_id < first_frame_id) {
+                                    throw std::runtime_error("target frame precedes its demuxed GOP start");
+                                }
+                                grouped_ids.push_back(frame_id);
+                                grouped_positions.push_back(
+                                    source_request.original_positions.at(frame_id));
+                                ++next_frame_indices[source_idx];
+                            }
+
+                            results_by_source[source_idx].push_back(
+                                {std::move(bundle), std::move(grouped_ids),
+                                 std::move(grouped_positions), first_frame_id, gop_len});
+                        }
+                    }
+                }
+
+                py::list result;
+                for (size_t source_idx = 0; source_idx < results_by_source.size(); ++source_idx) {
+                    for (auto& group : results_by_source[source_idx]) {
+                        auto& bundle = group.bundle;
+                        auto capsule = py::capsule(bundle.data.release(),
+                                                   [](void* ptr) { delete[] static_cast<uint8_t*>(ptr); });
+                        py::array_t<uint8_t> numpy_data({bundle.size}, {sizeof(uint8_t)},
+                                                        static_cast<uint8_t*>(capsule.get_pointer()),
+                                                        capsule);
+                        py::dict group_dict;
+                        group_dict["gop_data"] = std::move(numpy_data);
+                        // Zero-based index into the input requests list. All GOPs
+                        // split from the same source request keep this index so the
+                        // caller can scatter decoded frames back to that request.
+                        group_dict["source_index"] = source_idx;
+                        group_dict["source_name"] = source_requests[source_idx].filepath;
+                        group_dict["frame_ids"] = group.frame_ids;
+                        group_dict["frame_positions"] = group.frame_positions;
+                        group_dict["first_frame_id"] = group.first_frame_id;
+                        group_dict["gop_len"] = group.gop_len;
+                        result.append(std::move(group_dict));
+                    }
+                }
+                return result;
+            },
+            py::arg("requests"),
+            R"pbdoc(
+            Extract one serialized payload for each unique source/GOP.
+
+            Args:
+                requests: Source request dictionaries. Each dictionary must contain
+                    ``filepath`` and ``frame_ids``. Decode targets are sorted and
+                    de-duplicated per request, while every original position is
+                    retained in ``frame_positions``.
+
+            Returns:
+                A source-major list of group dictionaries. Requests spanning GOP
+                boundaries are split automatically. Each dictionary contains:
+
+                - ``gop_data``: encoded packets and packet metadata for one GOP.
+                - ``source_index``: zero-based index of the originating item in
+                  ``requests``; groups split from one request share this value.
+                - ``source_name``: the request's filepath.
+                - ``frame_ids``: sorted unique targets contained in this GOP.
+                - ``frame_positions``: original request positions for each target.
+                - ``first_frame_id`` and ``gop_len``: the GOP's half-open display
+                  frame range ``[first_frame_id, first_frame_id + gop_len)``.
+
+                Pass the returned list directly to :meth:`DecodeFromGOPGroupsRGB`.
+
+            Example:
+                >>> groups = decoder.GetGOPGroups(
+                ...     [{"filepath": camera_5_path, "frame_ids": [6, 7, 8, 9]}])
+                >>> decoded_groups = decoder.DecodeFromGOPGroupsRGB(groups)
+            )pbdoc")
+        .def(
             "DecodeFromGOPRGB",
             [](std::shared_ptr<PyNvGopDecoder>& dec, const py::array_t<uint8_t>& numpy_data,
                const std::vector<std::string>& filepaths, const std::vector<int> frame_ids, bool as_bgr) {
@@ -792,6 +989,137 @@ void Init_PyNvGopDecoder(py::module& m) {
                 ...     gop_data_list, ['video1.mp4', 'video2.mp4'], [0, 10], as_bgr=True)
                 >>> # Convert to PyTorch tensors on GPU (shape (height, width, 3), uint8)
                 >>> rgb_tensors = [torch.as_tensor(frame).clone() for frame in rgb_frames]
+            )pbdoc")
+        .def(
+            "DecodeFromGOPGroupsRGB",
+            [](std::shared_ptr<PyNvGopDecoder>& dec, const py::list& groups, bool as_bgr) {
+                try {
+                    using ByteArray = py::array_t<uint8_t, py::array::c_style | py::array::forcecast>;
+                    struct GroupLayout {
+                        // Index of the originating GetGOPGroups request. Multiple
+                        // GOPs split from one request have the same source_index.
+                        int source_index;
+                        std::string source_name;
+                        std::vector<int> frame_ids;
+                        std::vector<std::vector<int>> frame_positions;
+                        int first_frame_id;
+                        int gop_len;
+                    };
+
+                    const size_t num_groups = groups.size();
+                    std::vector<ByteArray> gop_datas(num_groups);
+                    std::vector<const uint8_t*> datas(num_groups);
+                    std::vector<size_t> sizes(num_groups);
+                    std::vector<std::string> source_names(num_groups);
+                    std::vector<std::vector<int>> frame_id_groups(num_groups);
+                    std::vector<GroupLayout> layouts(num_groups);
+
+                    for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
+                        py::dict group = py::cast<py::dict>(groups[group_idx]);
+                        for (const char* required_key :
+                             {"gop_data", "source_index", "source_name", "frame_ids", "frame_positions",
+                              "first_frame_id", "gop_len"}) {
+                            if (!group.contains(required_key)) {
+                                throw std::invalid_argument(std::string("group is missing '") + required_key +
+                                                            "'");
+                            }
+                        }
+
+                        gop_datas[group_idx] = group["gop_data"].cast<ByteArray>();
+                        const auto& data = gop_datas[group_idx];
+                        datas[group_idx] = static_cast<const uint8_t*>(data.data());
+                        sizes[group_idx] = data.size();
+
+                        GroupLayout layout{
+                            group["source_index"].cast<int>(),
+                            group["source_name"].cast<std::string>(),
+                            group["frame_ids"].cast<std::vector<int>>(),
+                            group["frame_positions"].cast<std::vector<std::vector<int>>>(),
+                            group["first_frame_id"].cast<int>(),
+                            group["gop_len"].cast<int>(),
+                        };
+                        if (layout.source_index < 0) {
+                            throw std::invalid_argument("group source_index must be non-negative");
+                        }
+                        if (layout.frame_positions.size() != layout.frame_ids.size()) {
+                            throw std::invalid_argument(
+                                "group frame_positions must have one entry per frame_id");
+                        }
+                        for (const auto& positions : layout.frame_positions) {
+                            if (positions.empty() || std::any_of(positions.begin(), positions.end(),
+                                                                 [](int position) { return position < 0; })) {
+                                throw std::invalid_argument(
+                                    "group frame_positions entries must be non-empty and non-negative");
+                            }
+                        }
+
+                        source_names[group_idx] = layout.source_name;
+                        frame_id_groups[group_idx] = layout.frame_ids;
+                        layouts[group_idx] = std::move(layout);
+                    }
+
+                    std::vector<RGBFrame> result;
+                    {
+                        py::gil_scoped_release release;
+                        dec->decode_from_gop_groups(datas, sizes, source_names, frame_id_groups, as_bgr,
+                                                    result);
+                    }
+
+                    py::list decoded_groups;
+                    size_t result_offset = 0;
+                    for (const auto& layout : layouts) {
+                        py::list frames;
+                        for (size_t frame_idx = 0; frame_idx < layout.frame_ids.size(); ++frame_idx) {
+                            if (result_offset >= result.size()) {
+                                throw std::runtime_error(
+                                    "grouped decode returned fewer frames than requested");
+                            }
+                            frames.append(py::cast(result[result_offset++]));
+                        }
+
+                        py::dict decoded_group;
+                        decoded_group["source_index"] = layout.source_index;
+                        decoded_group["source_name"] = layout.source_name;
+                        decoded_group["frame_ids"] = layout.frame_ids;
+                        decoded_group["frame_positions"] = layout.frame_positions;
+                        decoded_group["first_frame_id"] = layout.first_frame_id;
+                        decoded_group["gop_len"] = layout.gop_len;
+                        decoded_group["frames"] = std::move(frames);
+                        decoded_groups.append(std::move(decoded_group));
+                    }
+                    if (result_offset != result.size()) {
+                        throw std::runtime_error("grouped decode returned more frames than requested");
+                    }
+                    return decoded_groups;
+                } catch (const std::exception& e) {
+                    throw std::runtime_error(e.what());
+                }
+            },
+            py::arg("groups"), py::arg("as_bgr") = false,
+            R"pbdoc(
+            Decode several target frames from each unique source/GOP bundle.
+
+            Unlike :meth:`DecodeFromGOPListRGB`, which assigns one decoder task to
+            every output frame, this method assigns one decoder task to every GOP
+            group. All target frames in a group are produced during the same packet
+            traversal and NVDEC decode chain.
+
+            Args:
+                groups: Group dictionaries returned by :meth:`GetGOPGroups`. Each
+                    dictionary carries one serialized GOP, its unique target frame
+                    IDs, and every target's original positions.
+                as_bgr: Return BGR when true, RGB when false.
+
+            Returns:
+                One dictionary per input group. Metadata and ``frame_positions`` are
+                preserved, and ``frames`` contains one RGBFrame per unique frame ID.
+                Callers can scatter each frame to all corresponding original
+                positions without decoding duplicates.
+
+            Example:
+                >>> groups = demuxer.GetGOPGroups(
+                ...     [{"filepath": camera_5_path, "frame_ids": [6, 7, 8, 9]}])
+                >>> decoded_groups = decoder.DecodeFromGOPGroupsRGB(groups)
             )pbdoc")
         .def(
             "DecodeFromGOPList",
