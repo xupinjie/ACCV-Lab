@@ -138,6 +138,113 @@ class TestGetGOPListPartition:
         assert "GOP range" in str(exc_info.value) or "frame_id" in str(exc_info.value)
 
 
+class TestGroupedGopApis:
+    """One source/GOP payload and one decode chain can produce many target frames."""
+
+    @staticmethod
+    def _scatter(decoded_groups, frame_counts):
+        frames_by_source = [[None] * frame_count for frame_count in frame_counts]
+        for group in decoded_groups:
+            assert len(group["frames"]) == len(group["frame_positions"])
+            source_frames = frames_by_source[group["source_index"]]
+            for frame, positions in zip(group["frames"], group["frame_positions"]):
+                for position in positions:
+                    assert source_frames[position] is None
+                    source_frames[position] = frame
+        assert all(frame is not None for frames in frames_by_source for frame in frames)
+        return frames_by_source
+
+    @pytest.mark.skipif(not os.path.isdir("/proc/self/task"), reason="requires Linux thread accounting")
+    def test_demux_runners_are_created_for_active_sources_only(self):
+        demuxer = nvc.CreateGopDecoder(maxfiles=64, iGpu=0)
+        threads_before = len(os.listdir("/proc/self/task"))
+
+        groups = demuxer.GetGOPGroups([{"filepath": OPEN_GOP_SAMPLE, "frame_ids": [6]}])
+
+        threads_created = len(os.listdir("/proc/self/task")) - threads_before
+        assert len(groups) == 1
+        assert threads_created < 8, (
+            f"one active source created {threads_created} threads; "
+            "maxfiles must remain a capacity limit rather than an eager thread count"
+        )
+
+    def test_same_gop_is_serialized_and_decoded_once(self):
+        demuxer = nvc.CreateGopDecoder(maxfiles=4, iGpu=0)
+        grouped_decoder = nvc.CreateGopDecoder(maxfiles=4, iGpu=0)
+        baseline_decoder = nvc.CreateGopDecoder(maxfiles=5, iGpu=0)
+        requested_ids = [9, 6, 8, 7, 7]
+        expected_ids = [6, 7, 8, 9]
+
+        groups = demuxer.GetGOPGroups([{"filepath": OPEN_GOP_SAMPLE, "frame_ids": requested_ids}])
+        assert len(groups) == 1
+        group = groups[0]
+        assert group["source_index"] == 0
+        assert group["source_name"] == OPEN_GOP_SAMPLE
+        assert group["frame_ids"] == expected_ids
+        assert group["frame_positions"] == [[1], [3, 4], [2], [0]]
+        assert group["first_frame_id"] == 0
+        assert group["gop_len"] == 20
+
+        native_demuxer = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
+        native_groups = native_demuxer.GetGOPGroups(
+            [{"filepath": OPEN_GOP_SAMPLE, "frame_ids": requested_ids}]
+        )
+        assert len(native_groups) == 1
+        for key in (
+            "source_index",
+            "source_name",
+            "frame_ids",
+            "frame_positions",
+            "first_frame_id",
+            "gop_len",
+        ):
+            assert native_groups[0][key] == group[key]
+
+        legacy_groups = demuxer.GetGOPList([OPEN_GOP_SAMPLE] * len(expected_ids), expected_ids)
+        legacy_bytes = sum(gop_data.nbytes for gop_data, _, _ in legacy_groups)
+        assert group["gop_data"].nbytes * 3 < legacy_bytes
+
+        baseline = baseline_decoder.DecodeN12ToRGB([OPEN_GOP_SAMPLE] * len(requested_ids), requested_ids)
+        baseline_tensors = [torch.as_tensor(frame).clone() for frame in baseline]
+
+        decoded_groups = grouped_decoder.DecodeFromGOPGroupsRGB(groups)
+        assert len(decoded_groups) == 1
+        assert len(decoded_groups[0]["frames"]) == len(expected_ids)
+        grouped = self._scatter(decoded_groups, [len(requested_ids)])[0]
+        for actual, expected in zip(grouped, baseline_tensors):
+            assert torch.equal(torch.as_tensor(actual), expected)
+
+    def test_cross_gop_request_retains_order_and_duplicate_positions(self):
+        demuxer = nvc.CreateGopDecoder(maxfiles=2, iGpu=0)
+        grouped_decoder = nvc.CreateGopDecoder(maxfiles=3, iGpu=0)
+        baseline_decoder = nvc.CreateGopDecoder(maxfiles=4, iGpu=0)
+        requested_ids = [45, 6, 25, 6]
+
+        groups = demuxer.GetGOPGroups([{"filepath": OPEN_GOP_SAMPLE, "frame_ids": requested_ids}])
+        assert [group["frame_ids"] for group in groups] == [[6], [25], [45]]
+        assert [group["frame_positions"] for group in groups] == [[[1, 3]], [[2]], [[0]]]
+        assert [(group["first_frame_id"], group["gop_len"]) for group in groups] == [
+            (0, 20),
+            (20, 20),
+            (40, 20),
+        ]
+
+        decoded_groups = grouped_decoder.DecodeFromGOPGroupsRGB(groups)
+        assert sum(len(group["frames"]) for group in decoded_groups) == 3
+        grouped = self._scatter(decoded_groups, [len(requested_ids)])[0]
+        baseline = baseline_decoder.DecodeN12ToRGB([OPEN_GOP_SAMPLE] * len(requested_ids), requested_ids)
+        for actual, expected in zip(grouped, baseline):
+            assert torch.equal(torch.as_tensor(actual), torch.as_tensor(expected))
+
+    def test_grouped_decode_rejects_targets_spanning_two_gops(self):
+        decoder = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
+        group = decoder.GetGOPGroups([{"filepath": OPEN_GOP_SAMPLE, "frame_ids": [6]}])[0]
+        group["frame_ids"] = [6, 25]
+        group["frame_positions"] = [[0], [1]]
+        with pytest.raises(Exception, match="does not contain every target frame"):
+            decoder.DecodeFromGOPGroupsRGB([group])
+
+
 class TestSharedGopStoreOpenGop:
     """End-to-end check that ``GetGOPList`` + ``SharedGopStore.put`` produce
     independent entries for adjacent open-GOP GOPs."""

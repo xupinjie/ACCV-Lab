@@ -134,6 +134,13 @@ public:
     CUcontext GetContext() { return m_cuContext; }
 
     /**
+    *  @brief Return the codec and current decoded dimensions.
+    */
+    cudaVideoCodec GetCodec() const { return m_eCodec; }
+    int GetCurrentWidth() const { return static_cast<int>(m_nWidth); }
+    int GetCurrentHeight() const { return static_cast<int>(m_nLumaHeight); }
+
+    /**
     *  @brief  This function is used to get the output frame width.
     *  NV12/P016 output format width is 2 byte aligned because of U and V interleave
     */

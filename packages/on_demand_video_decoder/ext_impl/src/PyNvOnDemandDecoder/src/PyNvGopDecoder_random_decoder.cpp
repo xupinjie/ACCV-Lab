@@ -71,7 +71,7 @@ void PyNvGopDecoder::decode_from_video(const std::vector<std::string>& filepaths
 
     // lazy loading
     ensureCudaContextInitialized();
-    ensureDemuxRunnersInitialized();
+    ensureDemuxRunnersInitialized(total_frames);
     ensureDecodeRunnersInitialized();
 
     // reset last decoded frame infos
