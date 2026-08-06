@@ -784,6 +784,11 @@ void Init_PyNvGopDecoder(py::module& m) {
                 A source-major list of group dictionaries. Requests spanning GOP
                 boundaries are split automatically. Each dictionary contains:
 
+                Group dictionaries are variable length: their ``frame_ids`` lists
+                need not be aligned across groups. The length of each list is the
+                number of unique requested frames contained in that source/GOP,
+                rather than a conventional batch dimension.
+
                 - ``gop_data``: encoded packets and packet metadata for one GOP.
                 - ``source_index``: zero-based index of the originating item in
                   ``requests``; groups split from one request share this value.
@@ -1103,6 +1108,10 @@ void Init_PyNvGopDecoder(py::module& m) {
             every output frame, this method assigns one decoder task to every GOP
             group. All target frames in a group are produced during the same packet
             traversal and NVDEC decode chain.
+
+            Groups are variable length: each group's ``frame_ids`` and returned
+            ``frames`` lists contain the unique requested frames in that source/GOP,
+            so their lengths need not be aligned across groups.
 
             Args:
                 groups: Group dictionaries returned by :meth:`GetGOPGroups`. Each

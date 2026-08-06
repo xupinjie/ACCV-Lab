@@ -185,7 +185,7 @@ class TestGroupedGopApis:
         assert group["first_frame_id"] == 0
         assert group["gop_len"] == 20
 
-        native_demuxer = nvc.PyNvGopDecoder(maxfiles=1, iGpu=0)
+        native_demuxer = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
         native_groups = native_demuxer.GetGOPGroups(
             [{"filepath": OPEN_GOP_SAMPLE, "frame_ids": requested_ids}]
         )
@@ -200,8 +200,9 @@ class TestGroupedGopApis:
         ):
             assert native_groups[0][key] == group[key]
 
-        legacy_data, _, _ = demuxer.GetGOP([OPEN_GOP_SAMPLE] * len(expected_ids), expected_ids)
-        assert group["gop_data"].nbytes * 3 < legacy_data.nbytes
+        legacy_groups = demuxer.GetGOPList([OPEN_GOP_SAMPLE] * len(expected_ids), expected_ids)
+        legacy_bytes = sum(gop_data.nbytes for gop_data, _, _ in legacy_groups)
+        assert group["gop_data"].nbytes * 3 < legacy_bytes
 
         baseline = baseline_decoder.DecodeN12ToRGB([OPEN_GOP_SAMPLE] * len(requested_ids), requested_ids)
         baseline_tensors = [torch.as_tensor(frame).clone() for frame in baseline]

@@ -856,6 +856,11 @@ int PyNvGopDecoder::main_decode_groups(
             output.push_back(std::move(frame));
         }
     }
+
+    // DecProc queues color conversion on cu_stream. Joining its CPU runner only
+    // guarantees that the work was submitted; the output frames are ready when
+    // this public synchronous API returns only after the stream is synchronized.
+    CUDA_DRVAPI_CALL(cuStreamSynchronize(this->cu_stream));
     return 0;
 }
 
