@@ -108,9 +108,7 @@ def test_grouped_decoder_pool_matches_shape_when_group_order_changes(tmp_path: P
         ),
     ] * 10
     for paths, expected_shapes in requests:
-        groups = demuxer.GetGOPGroups(
-            [{"filepath": str(path), "frame_ids": [0]} for path in paths]
-        )
+        groups = demuxer.GetGOPGroups([{"filepath": str(path), "frame_ids": [0]} for path in paths])
         decoded = decoder.DecodeFromGOPGroupsRGB(groups)
         actual_shapes = [group["frames"][0].shape for group in decoded]
         assert actual_shapes == expected_shapes

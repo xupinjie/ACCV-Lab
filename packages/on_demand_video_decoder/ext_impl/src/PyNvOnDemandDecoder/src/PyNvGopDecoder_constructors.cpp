@@ -733,14 +733,13 @@ void Init_PyNvGopDecoder(py::module& m) {
                                     throw std::runtime_error("target frame precedes its demuxed GOP start");
                                 }
                                 grouped_ids.push_back(frame_id);
-                                grouped_positions.push_back(
-                                    source_request.original_positions.at(frame_id));
+                                grouped_positions.push_back(source_request.original_positions.at(frame_id));
                                 ++next_frame_indices[source_idx];
                             }
 
                             results_by_source[source_idx].push_back(
-                                {std::move(bundle), std::move(grouped_ids),
-                                 std::move(grouped_positions), first_frame_id, gop_len});
+                                {std::move(bundle), std::move(grouped_ids), std::move(grouped_positions),
+                                 first_frame_id, gop_len});
                         }
                     }
                 }
