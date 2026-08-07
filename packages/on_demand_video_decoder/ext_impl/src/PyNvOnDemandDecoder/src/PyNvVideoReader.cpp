@@ -748,29 +748,37 @@ DecodedFrameExt PyNvVideoReader::returnYUVFrame(void* pFrame_buffer, void* pFram
                                                 (CUdeviceptr)(pFrame_buffer + width * height),
                                                 false});  // todo: data+width*height assumes both planes are
             // contiguous. Actual NVENC allocation can have padding?
-        }
-        case Pixel_Format_YUV444_16Bit: {
             frame.views.push_back(CAIMemoryView{{height, width, 1},
                                                 {width, 1, 1},
+                                                "|u1",
+                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
+                                                (CUdeviceptr)(pFrame_buffer + 2 * width * height),
+                                                false});
+        } break;
+        case Pixel_Format_YUV444_16Bit: {
+            frame.views.push_back(CAIMemoryView{{height, width, 1},
+                                                {width * 2, 2, 2},
                                                 "|u2",
                                                 reinterpret_cast<size_t>(this->decoder->GetStream()),
                                                 (CUdeviceptr)(pFrame_buffer),
                                                 false});
             frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
+                                                {width * 2, 2, 2},
                                                 "|u2",
                                                 reinterpret_cast<size_t>(this->decoder->GetStream()),
                                                 (CUdeviceptr)(pFrame_buffer + 2 * (width * height)),
                                                 false});  // todo: data+width*height assumes both planes are
             // contiguous. Actual NVENC allocation can have padding?
             frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
+                                                {width * 2, 2, 2},
                                                 "|u2",
                                                 reinterpret_cast<size_t>(this->decoder->GetStream()),
                                                 (CUdeviceptr)(pFrame_buffer + 4 * (width * height)),
                                                 false});  // todo: data+width*height assumes both planes are
             // contiguous. Actual NVENC allocation can have padding?
-        }
+        } break;
+        default:
+            throw std::runtime_error("[ERROR] Unsupported pixel format for YUV output");
     }
     CUDA_DRVAPI_CALL(cuStreamSynchronize(this->decoder->GetStream()));
     return frame;

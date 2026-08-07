@@ -87,6 +87,15 @@ def resource_cases() -> Tuple[ResourceDecodeCase, ...]:
             ((256, 256), (128, 128, 2)),
         ),
         ResourceDecodeCase(
+            "hevc_hvc1_yuv444",
+            str(PIX_FMT_VARIANTS_DIR / "hevc_hvc1_yuv444p.mp4"),
+            33,
+            "yuv",
+            "YUV444",
+            torch.uint8,
+            ((256, 256), (256, 256), (256, 256)),
+        ),
+        ResourceDecodeCase(
             "vfr_h264",
             str(TEMPORAL_VARIANTS_DIR / "vfr_h264_yuv420p.mp4"),
             33,

@@ -170,17 +170,23 @@ int PyNvGopDecoder::GetYUVFromFrame(NvDecoder* decoder, const uint8_t* pFrame, u
                               (CUdeviceptr)(pFrame_buffer + width * height),
                               false});  // todo: data+width*height assumes both planes are
                                         // contiguous. Actual NVENC allocation can have padding?
+            decoded_frame.views.push_back(CAIMemoryView{{height, width, 1},
+                                                        {width, 1, 1},
+                                                        "|u1",
+                                                        reinterpret_cast<size_t>(decoder->GetStream()),
+                                                        (CUdeviceptr)(pFrame_buffer + 2 * width * height),
+                                                        false});
         } break;
         case Pixel_Format_YUV444_16Bit: {
             decoded_frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                        {width, 1, 1},
+                                                        {width * 2, 2, 2},
                                                         "|u2",
                                                         reinterpret_cast<size_t>(decoder->GetStream()),
                                                         (CUdeviceptr)(pFrame_buffer),
                                                         false});
             decoded_frame.views.push_back(
                 CAIMemoryView{{height, width, 1},
-                              {width, 1, 1},
+                              {width * 2, 2, 2},
                               "|u2",
                               reinterpret_cast<size_t>(decoder->GetStream()),
                               (CUdeviceptr)(pFrame_buffer + 2 * (width * height)),
@@ -188,7 +194,7 @@ int PyNvGopDecoder::GetYUVFromFrame(NvDecoder* decoder, const uint8_t* pFrame, u
                                         // contiguous. Actual NVENC allocation can have padding?
             decoded_frame.views.push_back(
                 CAIMemoryView{{height, width, 1},
-                              {width, 1, 1},
+                              {width * 2, 2, 2},
                               "|u2",
                               reinterpret_cast<size_t>(decoder->GetStream()),
                               (CUdeviceptr)(pFrame_buffer + 4 * (width * height)),
