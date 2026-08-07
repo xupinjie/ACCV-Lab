@@ -21,7 +21,7 @@ probe the SPS), and the demuxer silently fell back to 8-bit yuv420p. For a real
 10-bit HEVC stream this mis-sized the GPU output buffer by a factor of 2 and
 crashed the GOP decode path with `CUDA_ERROR_INVALID_VALUE`.
 
-These tests drive `GetGOPList` + `DecodeFromGOPList` over the matrix of stream
+This parametrized test drives `GetGOPList` + `DecodeFromGOPList` over the matrix of stream
 shapes the package supports on NVDEC (HEVC at both 8-bit and 10-bit with both
 hev1 and hvc1 sample-entry tags, plus H.264 8-bit), and assert the decoded
 planes carry the dtype implied by the stream's real bit-depth (uint8 for
@@ -44,11 +44,11 @@ VARIANTS_DIR = os.path.join(utils.get_data_dir(), "pix_fmt_variants")
 # package targets — see the support matrix for codec/bit-depth coverage:
 # https://developer.nvidia.com/video-encode-decode-support-matrix
 VARIANTS = [
-    ("hevc_hev1_yuv420p.mp4", "hev1", 8, "|u1"),
-    ("hevc_hev1_yuv420p10le.mp4", "hev1", 10, "|u2"),
-    ("hevc_hvc1_yuv420p.mp4", "hvc1", 8, "|u1"),
-    ("hevc_hvc1_yuv420p10le.mp4", "hvc1", 10, "|u2"),
-    ("h264_avc1_yuv420p.mp4", "avc1", 8, "|u1"),
+    ("hevc_hev1_yuv420p.mp4", "hev1", 8, 3, "|u1", ((256, 256, 1), (128, 128, 2))),
+    ("hevc_hev1_yuv420p10le.mp4", "hev1", 10, 5, "|u2", ((256, 256, 1), (128, 128, 2))),
+    ("hevc_hvc1_yuv420p.mp4", "hvc1", 8, 3, "|u1", ((256, 256, 1), (128, 128, 2))),
+    ("hevc_hvc1_yuv420p10le.mp4", "hvc1", 10, 5, "|u2", ((256, 256, 1), (128, 128, 2))),
+    ("h264_avc1_yuv420p.mp4", "avc1", 8, 3, "|u1", ((256, 256, 1), (128, 128, 2))),
 ]
 
 
@@ -60,11 +60,18 @@ def _video_path(name):
 
 
 @pytest.mark.parametrize(
-    "filename, codec_tag, bit_depth, expected_dtype",
+    "filename, codec_tag, bit_depth, expected_format, expected_dtype, expected_shapes",
     VARIANTS,
     ids=[v[0] for v in VARIANTS],
 )
-def test_decode_from_gop_round_trip(filename, codec_tag, bit_depth, expected_dtype):
+def test_decode_from_gop_round_trip(
+    filename,
+    codec_tag,
+    bit_depth,
+    expected_format,
+    expected_dtype,
+    expected_shapes,
+):
     """End-to-end: GetGOPList -> DecodeFromGOPList must produce a plane of the
     correct dtype for the stream's actual bit-depth."""
     path = _video_path(filename)
@@ -72,49 +79,50 @@ def test_decode_from_gop_round_trip(filename, codec_tag, bit_depth, expected_dty
     demuxer = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
     decoder = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
 
-    gop_list = demuxer.GetGOPList([path], [0], useGOPCache=True)
+    frame_id = 33
+    gop_list = demuxer.GetGOPList([path], [frame_id], useGOPCache=True)
     assert gop_list, f"GetGOPList returned empty for {filename}"
     gop_data, first_ids, gop_lens = gop_list[0]
     assert gop_data.size > 0, f"GOP data is empty for {filename}"
-    assert first_ids == [0], f"unexpected first_ids={first_ids} for {filename}"
+    assert first_ids[0] <= frame_id, f"unexpected first_ids={first_ids} for {filename}"
     assert gop_lens and gop_lens[0] > 0, f"unexpected gop_lens={gop_lens} for {filename}"
+    assert frame_id < first_ids[0] + gop_lens[0]
 
-    frames = decoder.DecodeFromGOPList([gop_data], [path], [0])
+    frames = decoder.DecodeFromGOPList([gop_data], [path], [frame_id])
     assert len(frames) == 1, f"expected 1 frame, got {len(frames)} for {filename}"
 
+    assert frames[0].format == expected_format
     planes = frames[0].cuda()
-    assert len(planes) >= 1, f"no planes returned for {filename}"
-
-    cai = planes[0].__cuda_array_interface__
-    assert cai["typestr"] == expected_dtype, (
-        f"Y plane dtype mismatch for {filename}: got {cai['typestr']!r}, "
-        f"expected {expected_dtype!r} for {bit_depth}-bit"
-    )
+    assert tuple(tuple(plane.shape) for plane in planes) == expected_shapes
 
     expected_bytes_per_sample = 2 if bit_depth >= 10 else 1
-    actual_bytes_per_sample = int(cai["typestr"][-1])
+    luma_width = expected_shapes[0][1]
+    expected_strides = (
+        (
+            luma_width * expected_bytes_per_sample,
+            expected_bytes_per_sample,
+            expected_bytes_per_sample,
+        ),
+        (
+            luma_width * expected_bytes_per_sample,
+            2 * expected_bytes_per_sample,
+            expected_bytes_per_sample,
+        ),
+    )
+    actual_strides = tuple(tuple(plane.__cuda_array_interface__["strides"]) for plane in planes)
+    assert (
+        actual_strides == expected_strides
+    ), f"plane strides mismatch for {filename}: got {actual_strides}, expected {expected_strides}"
+
+    for plane_index, plane in enumerate(planes):
+        cai = plane.__cuda_array_interface__
+        assert cai["typestr"] == expected_dtype, (
+            f"plane {plane_index} dtype mismatch for {filename}: got {cai['typestr']!r}, "
+            f"expected {expected_dtype!r} for {bit_depth}-bit"
+        )
+
+    actual_bytes_per_sample = int(planes[0].__cuda_array_interface__["typestr"][-1])
     assert actual_bytes_per_sample == expected_bytes_per_sample, (
         f"Y plane element size mismatch for {filename}: got "
         f"{actual_bytes_per_sample}B, expected {expected_bytes_per_sample}B"
     )
-
-
-@pytest.mark.parametrize(
-    "filename, codec_tag, bit_depth, expected_dtype",
-    VARIANTS,
-    ids=[v[0] for v in VARIANTS],
-)
-def test_decode_does_not_raise_invalid_value(filename, codec_tag, bit_depth, expected_dtype):
-    """Focused regression: the specific failure mode we fixed was
-    `CUDA_ERROR_INVALID_VALUE` thrown from the GOP decode path because the GPU buffer
-    was half the size NVDEC writes. Reproduce the exact call sequence the
-    customer used and assert it does not raise that error."""
-    path = _video_path(filename)
-    demuxer = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
-    decoder = nvc.CreateGopDecoder(maxfiles=1, iGpu=0)
-
-    gop_data, _, _ = demuxer.GetGOPList([path], [0], useGOPCache=True)[0]
-    # No prior RGB call to "prime" the GPU pool — exercise the raw YUV path
-    # directly, which was the broken path before the SPS fallback.
-    frames = decoder.DecodeFromGOPList([gop_data], [path], [0])
-    assert frames, f"DecodeFromGOPList returned no frames for {filename}"

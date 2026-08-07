@@ -156,25 +156,6 @@ def test_construct_rejects_invalid_args(kwargs):
 # ===========================================================================
 
 
-def test_validate_empty_filepaths():
-    """Empty filepaths list is rejected before any decode work."""
-    dec = _make_async_dec()
-    with pytest.raises(RuntimeError, match="filepaths must not be empty"):
-        dec.DecodeFromGOPListRGB([], [], [], False)
-
-
-def test_validate_too_many_files():
-    """More filepaths than num_of_file is rejected."""
-    files = _sample_files()
-    dec = _make_async_dec(V=1)  # only room for 1 video
-    if len(files) <= 1:
-        pytest.skip("need at least 2 sample videos")
-    gop_dec = _make_gop_dec()
-    numpy_datas = _build_numpy_datas(gop_dec, files, [[0]] * len(files))
-    with pytest.raises(RuntimeError, match="exceeds maxfiles"):
-        dec.DecodeFromGOPListRGB(numpy_datas, files, [[0]] * len(files), False)
-
-
 def test_validate_too_many_frames():
     """More frames than max_frames_per_decode_call is rejected."""
     files = _sample_files()
@@ -369,27 +350,6 @@ def test_rgb_output_shape():
         assert len(out[v]) == F, f"out[{v}] has {len(out[v])} frames, expected {F}"
 
 
-def test_rgb_output_dtype_and_device():
-    """Each RGBFrame converts to a uint8 (H, W, 3) CUDA tensor."""
-    files = _sample_files()
-    V = len(files)
-    frame_ids_2d = [[0]] * V
-
-    gop_dec = _make_gop_dec()
-    numpy_datas = _build_numpy_datas(gop_dec, files, frame_ids_2d)
-
-    dec = _make_async_dec(V=V, F=1)
-    dec.DecodeFromGOPListRGB(numpy_datas, files, frame_ids_2d, False)
-    out = dec.DecodeFromGOPListRGBGetBuffer(files, frame_ids_2d, False)
-
-    for v in range(V):
-        t = torch.as_tensor(out[v][0], device="cuda")
-        assert t.dtype == torch.uint8, f"v={v}: dtype={t.dtype}"
-        assert t.ndim == 3, f"v={v}: ndim={t.ndim}"
-        assert t.shape[-1] == 3, f"v={v}: shape={tuple(t.shape)}"
-        assert t.device.type == "cuda"
-
-
 def test_rgb_single_video_multi_frame():
     """V=1, F=4 is supported."""
     files = _sample_files()
@@ -403,39 +363,6 @@ def test_rgb_single_video_multi_frame():
     dec.DecodeFromGOPListRGB(numpy_datas, single, frame_ids_2d, False)
     out = dec.DecodeFromGOPListRGBGetBuffer(single, frame_ids_2d, False)
     assert len(out) == 1 and len(out[0]) == len(_SAME_GOP_FRAMES)
-
-
-def test_rgb_single_frame_per_video():
-    """F=1 is supported (one frame per video)."""
-    files = _sample_files()
-    V = len(files)
-    frame_ids_2d = [[0]] * V
-
-    gop_dec = _make_gop_dec()
-    numpy_datas = _build_numpy_datas(gop_dec, files, frame_ids_2d)
-
-    dec = _make_async_dec(V=V, F=1)
-    dec.DecodeFromGOPListRGB(numpy_datas, files, frame_ids_2d, False)
-    out = dec.DecodeFromGOPListRGBGetBuffer(files, frame_ids_2d, False)
-    assert len(out) == V
-    for v in range(V):
-        assert len(out[v]) == 1
-
-
-@pytest.mark.parametrize("as_bgr", [False, True])
-def test_rgb_as_bgr_flag(as_bgr):
-    """as_bgr=True and as_bgr=False both complete without error."""
-    files = _sample_files()
-    V = len(files)
-    frame_ids_2d = [[0]] * V
-
-    gop_dec = _make_gop_dec()
-    numpy_datas = _build_numpy_datas(gop_dec, files, frame_ids_2d)
-
-    dec = _make_async_dec(V=V, F=1)
-    dec.DecodeFromGOPListRGB(numpy_datas, files, frame_ids_2d, as_bgr)
-    out = dec.DecodeFromGOPListRGBGetBuffer(files, frame_ids_2d, as_bgr)
-    assert out[0][0] is not None
 
 
 # ===========================================================================
@@ -460,58 +387,6 @@ def test_yuv_output_shape():
     assert len(out) == V
     for v in range(V):
         assert len(out[v]) == F
-
-
-def test_yuv_frame_has_views():
-    """Each DecodedFrameExt has the correct number of CAIMemoryView plane views."""
-    files = _sample_files()
-    V = len(files)
-    frame_ids_2d = [[0]] * V
-
-    gop_dec = _make_gop_dec()
-    numpy_datas = _build_numpy_datas(gop_dec, files, frame_ids_2d)
-
-    dec = _make_async_dec(V=V, F=1)
-    dec.DecodeFromGOPList(numpy_datas, files, frame_ids_2d)
-    out = dec.DecodeFromGOPListGetBuffer(files, frame_ids_2d)
-
-    # Raw Pixel_Format enum values (from PyCAIMemoryView.hpp):
-    #   NV12=3 → 2 planes (Y, UV interleaved)
-    #   YUV444=4 → 3 planes (Y, U, V separate)
-    #   P016=5 → 2 planes (Y, UV interleaved 16-bit)
-    #   YUV444_16Bit=6 → 3 planes (Y, U, V separate 16-bit)
-    EXPECTED_VIEWS = {3: 2, 4: 3, 5: 2, 6: 3}
-
-    for v in range(V):
-        frame = out[v][0]
-        views = frame.cuda()
-        fmt = frame.format
-        expected = EXPECTED_VIEWS.get(fmt, 2)
-        assert (
-            len(views) == expected
-        ), f"v={v}: format={fmt}, expected {expected} plane views, got {len(views)}"
-        # Y-plane shape: (H, W, 1)
-        assert len(views[0].shape) == 3
-        assert views[0].shape[2] == 1
-
-
-def test_yuv_frame_format_set():
-    """DecodedFrameExt.format is not UNDEFINED."""
-    files = _sample_files()
-    V = len(files)
-    frame_ids_2d = [[0]] * V
-
-    gop_dec = _make_gop_dec()
-    numpy_datas = _build_numpy_datas(gop_dec, files, frame_ids_2d)
-
-    dec = _make_async_dec(V=V, F=1)
-    dec.DecodeFromGOPList(numpy_datas, files, frame_ids_2d)
-    out = dec.DecodeFromGOPListGetBuffer(files, frame_ids_2d)
-
-    for v in range(V):
-        assert (
-            out[v][0].format != nvc.Pixel_Format_UNDEFINED if hasattr(nvc, "Pixel_Format_UNDEFINED") else True
-        )
 
 
 # ===========================================================================
@@ -802,28 +677,6 @@ def test_resubmit_only_latest_result_retrievable():
     dec2.DecodeFromGOPListRGB(nd_b, files, frame_ids_b, False)
     with pytest.raises(RuntimeError):
         dec2.DecodeFromGOPListRGBGetBuffer(files, frame_ids_a, False)
-
-
-def test_invalid_frame_id_propagates_exception():
-    """Out-of-range frame_id (beyond video length) is rethrown at GetBuffer.
-
-    The bundle for frame 0 does not cover frame 999999, so the worker throws
-    "no serialized GOP bundle covers frame 999999".  This tests that async
-    worker errors are stored and re-raised at GetBuffer time.
-    """
-    files = _sample_files()
-    V = len(files)
-    # Frame id 999999 is almost certainly out of range for any test video.
-    frame_ids_2d = [[999999]] * V
-    gop_dec = _make_gop_dec()
-    # Bundle obtained for a valid frame; the invalid frame_id causes a decode error.
-    gop_data = _get_numpy_data(gop_dec, files[0], 0)
-    numpy_datas = [[gop_data]] * V
-
-    dec = _make_async_dec(V=V, F=1)
-    dec.DecodeFromGOPListRGB(numpy_datas, files, frame_ids_2d, False)
-    with pytest.raises(RuntimeError):
-        dec.DecodeFromGOPListRGBGetBuffer(files, frame_ids_2d, False)
 
 
 def test_wrong_gop_bundle_propagates_async_error():

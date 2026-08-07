@@ -721,13 +721,13 @@ DecodedFrameExt PyNvVideoReader::returnYUVFrame(void* pFrame_buffer, void* pFram
         } break;
         case Pixel_Format_P016: {
             frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
+                                                {width * 2, 2, 2},
                                                 "|u2",
                                                 reinterpret_cast<size_t>(this->decoder->GetStream()),
                                                 (CUdeviceptr)(pFrame_buffer),
                                                 false});
             frame.views.push_back(CAIMemoryView{{height / 2, width / 2, 2},
-                                                {width / 2 * 2, 2, 1},
+                                                {width * 2, 4, 2},
                                                 "|u2",
                                                 reinterpret_cast<size_t>(this->decoder->GetStream()),
                                                 (CUdeviceptr)(pFrame_buffer + 2 * (width * height)),

@@ -14,7 +14,7 @@ dynamic = ["version"]
 description = "On-demand video decoder (part of the ACCV-Lab package)."
 requires-python = ">=3.8"
 dependencies = [
-    "torch>=2.0.0",
+    "torch>=2.3.0",
     "numpy>=1.22.2",
 ]
 

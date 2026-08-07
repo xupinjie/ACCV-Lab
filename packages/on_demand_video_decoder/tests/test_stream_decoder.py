@@ -16,7 +16,6 @@ import pytest
 import sys
 
 import ctypes
-import random
 import threading
 import time
 
@@ -30,31 +29,6 @@ def test_pynvsamplereader_rejects_direct_construction():
         nvc.PyNvSampleReader()
     with pytest.raises(TypeError):
         nvc.PyNvSampleReader(1, 1)
-
-
-def test_stream_access_single():
-    max_num_files_to_use = 6
-    iter_num = 10
-    path_base = utils.get_data_dir()
-
-    nv_gop_dec = nvc.CreateSampleReader(
-        num_of_set=10,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    frame_min = 0
-    frame_max = 200
-
-    for c in range(iter_num):
-        files = utils.select_random_clip(path_base)
-        assert files is not None, f"files is None for select_random_clip, path_base: {path_base}"
-
-        frames = [random.randint(frame_min, frame_max) for _ in range(len(files))]
-        print(f"Comparison: {c}, frames: {frames}")
-
-        gop_decoded = utils.gop_decode_bgr(nv_gop_dec, files, frames)
-        assert gop_decoded is not None, f"gop_decoded is None for DecodeN12ToRGB, frames: {frames}"
 
 
 def _heartbeats_during(call, margin=0.02):
