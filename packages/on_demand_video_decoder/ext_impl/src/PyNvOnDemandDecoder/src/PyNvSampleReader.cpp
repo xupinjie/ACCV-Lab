@@ -194,7 +194,8 @@ std::vector<RGBFrame> PyNvSampleReader::run_rgb_out(const std::vector<std::strin
         // Only create new reader if cache is not full AND key doesn't exist
         // This prevents creating readers that would be discarded (memory leak)
         if (reader_map.notFull() && !reader_map.contains(filepaths[i])) {
-            video_reader = new PyNvVideoReader(filepaths[i], this->gpu_id, this->cu_context, this->cu_stream);
+            video_reader = new PyNvVideoReader(filepaths[i], this->gpu_id, this->cu_context, this->cu_stream,
+                                               this->suppress_no_color_range_given_warning);
         }
 
         auto cur_video_reader = reader_map.find(filepaths[i], video_reader);
@@ -237,7 +238,8 @@ std::vector<DecodedFrameExt> PyNvSampleReader::run(const std::vector<std::string
         // Only create new reader if cache is not full AND key doesn't exist
         // This prevents creating readers that would be discarded (memory leak)
         if (reader_map.notFull() && !reader_map.contains(filepaths[i])) {
-            video_reader = new PyNvVideoReader(filepaths[i], this->gpu_id, this->cu_context, this->cu_stream);
+            video_reader = new PyNvVideoReader(filepaths[i], this->gpu_id, this->cu_context, this->cu_stream,
+                                               this->suppress_no_color_range_given_warning);
         }
 
         auto cur_video_reader = reader_map.find(filepaths[i], video_reader);

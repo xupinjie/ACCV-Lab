@@ -18,12 +18,14 @@
 
 #include <string>
 
+#include "ExternalBuffer.hpp"
+#include "FrameOutput.hpp"
 #include "PyCAIMemoryView.hpp"
 
 #include "cuviddec.h"
 #include <libavutil/pixfmt.h>
 
-struct DecodedFrameExt : public DecodedFrame {
+struct DecodedFrameExt {
     enum class VideoSurfaceFormat {
         UNSPECIFIED = 0,
         NV12 = 1,
@@ -46,8 +48,12 @@ struct DecodedFrameExt : public DecodedFrame {
         ColorRange_FULL = 2,
     };
 
+    int64_t timestamp;
+    std::vector<CAIMemoryView> views;
+    Pixel_Format format;
+    std::shared_ptr<ExternalBuffer> extBuf;
     ColorRange color_range = ColorRange::ColorRange_UNSPECIFIED;
-    DecodedFrameExt() = default;
+    DecodedFrameExt() { extBuf = std::make_shared<ExternalBuffer>(); }
     VideoSurfaceFormat GetVideoSurfaceFormat() const;
 
     void SetVideoSurfaceFormat(cudaVideoSurfaceFormat video_format_in);
@@ -93,27 +99,17 @@ struct DecodedFrameExt : public DecodedFrame {
                 [](std::shared_ptr<DecodedFrameExt>& self) {
                     int height = self->views.at(0).shape.at(0);
                     int width = self->views.at(0).shape.at(1);
-                    int framesize = width * height * 1.5;
-                    switch (self->format) {
-                        case Pixel_Format_NV12:
-                            break;
-                        case Pixel_Format_P016:
-                            framesize = width * height * 3;
-                            break;
-                        case Pixel_Format_YUV444:
-                            framesize = width * height * 3;
-                            break;
-                        case Pixel_Format_YUV444_16Bit:
-                            framesize = width * height * 6;
-                            break;
-                        default:
-                            break;
-                    }
+                    int framesize = static_cast<int>(
+                        accvlab::on_demand_video_decoder::internal::frame_output::frame_bytes(
+                            accvlab::on_demand_video_decoder::internal::frame_output::
+                                output_format_from_pixel_format(self->format),
+                            height, width));
                     return framesize;
                 },
                 R"pbdoc(
-            return underlying views which implement CAI
-            :param None: None
+            Return the total size in bytes of the tightly packed decoded frame buffer.
+
+            The size includes all YUV planes.
             )pbdoc")
             .def(
                 "cuda", [](std::shared_ptr<DecodedFrameExt>& self) { return self->views; },
@@ -127,7 +123,8 @@ struct DecodedFrameExt : public DecodedFrame {
                     switch (self->format) {
                         case Pixel_Format_NV12: {
                             size_t width = self->views.at(0).shape[1];
-                            size_t height = self->views.at(0).shape[0] * 1.5;
+                            size_t luma_height = self->views.at(0).shape[0];
+                            size_t height = luma_height + (luma_height + 1) / 2;
                             CUdeviceptr data = self->views.at(0).data;
                             CUstream stream = self->views.at(0).stream;
                             self->views.clear();

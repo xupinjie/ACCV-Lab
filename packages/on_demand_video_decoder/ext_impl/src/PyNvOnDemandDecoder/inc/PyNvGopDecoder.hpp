@@ -40,6 +40,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <unordered_set>
 #include <vector>
 
 #define MAX_SIZE 2000
@@ -518,8 +519,8 @@ class PyNvGopDecoder {
      * 2. **Packet Processing**: Consumes packets from queue until completion signal
      * 3. **Frame Decoding**: Calls NvDecoder with packet data and retrieval flags
      * 4. **Format Conversion**: 
-     *    - RGB: Calls `GetRGBFromFrame()` with color space conversion
-     *    - YUV: Calls `GetYUVFromFrame()` with direct GPU memory copy
+     *    - RGB: Uses the shared FrameOutput color-conversion path
+     *    - YUV: Uses the shared FrameOutput GPU-copy and view-construction path
      * 5. **State Updates**: Maintains decoder state for cross-session optimization
      * 6. **Validation**: Ensures output frame count matches expected frame count
      * 
@@ -693,12 +694,14 @@ class PyNvGopDecoder {
                                  std::vector<int>& sorted_frame_ids, std::vector<int>& first_frame_ids,
                                  std::vector<int>& gop_length);
 
-    static Pixel_Format GetNativeFormat(const cudaVideoSurfaceFormat inputFormat);
-
    private:
+    void WarnIfColorRangeUnspecified(AVColorRange color_range, const std::string& filename);
+
     int max_num_files = 0;
 
     bool suppress_no_color_range_given_warning = false;
+    std::mutex no_color_range_warning_mutex;
+    std::unordered_set<std::string> warned_no_color_range_files;
 
     bool destroy_context = false;
     CUcontext cu_context = NULL;
@@ -772,32 +775,6 @@ class PyNvGopDecoder {
         const std::vector<std::vector<int>>& all_first_frame_ids,
         const std::vector<std::unique_ptr<ConcurrentQueue<std::tuple<uint8_t*, int, int>>>>& vpacket_queue,
         const std::vector<std::vector<std::unique_ptr<uint8_t[]>>>& vpacket_array);
-
-    /**
-     * Convert decoded frame to RGB format
-     * @param decoder The decoder instance
-     * @param pFrame Pointer to the decoded frame data
-     * @param pFrame_buffer Pointer to the output RGB buffer
-     * @param color_range Color range of the input frame
-     * @param use_bgr_format Whether to use BGR format instead of RGB
-     * @param rgb_frame Output reference to construct the RGB frame directly
-     * @return 0 on success, -1 on error
-     */
-    static int GetRGBFromFrame(NvDecoder* decoder, const uint8_t* pFrame, uint8_t* pFrame_buffer,
-                               AVColorRange color_range, bool use_bgr_format, RGBFrame& rgb_frame);
-
-    /**
-     * Create a DecodedFrameExt object from decoded frame data
-     * @param decoder The decoder instance
-     * @param pFrame Pointer to the decoded frame data
-     * @param pFrame_buffer Pointer to the output frame buffer
-     * @param color_range Color range of the input frame
-     * @param timestamp Timestamp of the frame
-     * @param decoded_frame Output reference to construct the DecodedFrameExt object
-     * @return 0 on success, -1 on error
-     */
-    static int GetYUVFromFrame(NvDecoder* decoder, const uint8_t* pFrame, uint8_t* pFrame_buffer,
-                               AVColorRange color_range, int64_t timestamp, DecodedFrameExt& decoded_frame);
 };
 
 /**

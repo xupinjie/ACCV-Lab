@@ -15,12 +15,12 @@
  */
 
 #pragma once
-#include "ExternalBuffer.hpp"
 #include "NvCodecUtils.h"
 #include "nvEncodeAPI.h"
 #include <cuda.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -77,15 +77,6 @@ class CuCtxGuard {
 #define ENUM_VALUE(prefix, s) value(ENUM_VALUE_STRINGIFY(s), prefix##_##s)
 #define DEF_CONSTANT(s) attr(ENUM_VALUE_STRINGIFY(s)) = py::cast(s)
 #define DEF_READWRITE(type, s) def_readwrite(ENUM_VALUE_STRINGIFY(s), &type::s)
-
-enum Pixel_Format {
-    Pixel_Format_UNDEFINED = 0,
-    Pixel_Format_NV12 = 3,
-    Pixel_Format_YUV444 = 4,
-    Pixel_Format_P016 = 5,
-    Pixel_Format_YUV444_16Bit = 6
-
-};
 
 struct CAIMemoryView {
     std::vector<size_t> shape;
@@ -144,140 +135,6 @@ struct CAIMemoryView {
                 dict["gpuIdx"] = 0;  // TODO
                 return dict;
             });
-    }
-};
-
-struct DecodedFrame {
-    int64_t timestamp;
-    std::vector<CAIMemoryView> views;
-    Pixel_Format format;
-    std::shared_ptr<ExternalBuffer> extBuf;
-    DecodedFrame() { extBuf = std::make_shared<ExternalBuffer>(); }
-    static void Export(py::module& m) {
-        py::class_<DecodedFrame, std::shared_ptr<DecodedFrame>>(m, "DecodedFrame", py::module_local())
-            .def_readonly("timestamp", &DecodedFrame::timestamp)
-            .def_readonly("format", &DecodedFrame::format)
-            .def("__repr__",
-                 [](std::shared_ptr<DecodedFrame>& self) {
-                     std::stringstream ss;
-                     ss << "<DecodedFrame [";
-                     ss << "timestamp=" << self->timestamp;
-                     ss << ", format=" << py::str(py::cast(self->format));
-                     ss << ", " << py::str(py::cast(self->views));
-                     ss << "]>";
-                     return ss.str();
-                 })
-            .def(
-                "framesize",
-                [](std::shared_ptr<DecodedFrame>& self) {
-                    int height = self->views.at(0).shape.at(0);
-                    int width = self->views.at(0).shape.at(1);
-                    int framesize = width * height * 1.5;
-                    switch (self->format) {
-                        case Pixel_Format_NV12:
-                            break;
-                        case Pixel_Format_P016:
-                            framesize = width * height * 3;
-                            break;
-                        case Pixel_Format_YUV444:
-                            framesize = width * height * 3;
-                            break;
-                        case Pixel_Format_YUV444_16Bit:
-                            framesize = width * height * 6;
-                            break;
-                        default:
-                            break;
-                    }
-                    return framesize;
-                },
-                R"pbdoc(
-            return underlying views which implement CAI
-            :param None: None
-            )pbdoc")
-            .def(
-                "cuda", [](std::shared_ptr<DecodedFrame>& self) { return self->views; },
-                R"pbdoc(
-            return underlying views which implement CAI
-            :param None: None
-            )pbdoc")
-            .def(
-                "nvcv_image",
-                [](std::shared_ptr<DecodedFrame>& self) {
-                    switch (self->format) {
-                        case Pixel_Format_NV12: {
-                            size_t width = self->views.at(0).shape[1];
-                            size_t height = self->views.at(0).shape[0] * 1.5;
-                            CUdeviceptr data = self->views.at(0).data;
-                            CUstream stream = self->views.at(0).stream;
-                            self->views.clear();
-                            self->views.push_back(
-                                CAIMemoryView{{height, width, 1},
-                                              {width, 2, 1},
-                                              "|u1",
-                                              reinterpret_cast<size_t>(stream),
-                                              (data),
-                                              false});  // hack for cvcuda tensor represenation
-                        } break;
-                        case Pixel_Format_YUV444: {
-                            size_t width = self->views.at(0).shape[1];
-                            size_t height = self->views.at(0).shape[0] * 3;
-                            CUdeviceptr data = self->views.at(0).data;
-                            CUstream stream = self->views.at(0).stream;
-                            self->views.clear();
-                            self->views.push_back(
-                                CAIMemoryView{{height, width, 1},
-                                              {width, 3, 1},
-                                              "|u1",
-                                              reinterpret_cast<size_t>(stream),
-                                              (data),
-                                              false});  // hack for cvcuda tensor represenation
-                        } break;
-                        default:
-                            throw std::invalid_argument("only nv12 and yuv444 supported as of now");
-                            break;
-                    }
-                    return self->views;
-                },
-                R"pbdoc(
-            return underlying views which implement CAI
-            :param None: None
-            )pbdoc")
-
-            // DL Pack Tensor
-            .def_property_readonly(
-                "shape", [](std::shared_ptr<DecodedFrame>& self) { return self->extBuf->shape(); },
-                "Get the shape of the buffer as an array")
-            .def_property_readonly(
-                "strides", [](std::shared_ptr<DecodedFrame>& self) { return self->extBuf->strides(); },
-                "Get the strides of the buffer")
-            .def_property_readonly(
-                "dtype", [](std::shared_ptr<DecodedFrame>& self) { return self->extBuf->dtype(); },
-                "Get the data type of the buffer")
-            .def(
-                "__dlpack__",
-                [](std::shared_ptr<DecodedFrame>& self, py::object stream) {
-                    return self->extBuf->dlpack(stream);
-                },
-                py::arg("stream") = NULL, "Export the buffer as a DLPack tensor")
-            .def(
-                "__dlpack_device__",
-                [](std::shared_ptr<DecodedFrame>& self) {
-                    // DLDevice ctx;
-                    // ctx.device_type = DLDeviceType::kDLCUDA;
-                    // ctx.device_id = 0;
-                    return py::make_tuple(py::int_(static_cast<int>(DLDeviceType::kDLCUDA)),
-                                          py::int_(static_cast<int>(0)));
-                },
-                "Get the device associated with the buffer")
-            .def(
-                "GetPtrToPlane",
-
-                [](std::shared_ptr<DecodedFrame>& self, int planeIdx) { return self->views[planeIdx].data; },
-                R"pbdoc(
-            return pointer to base address for plane index
-            :param planeIdx : index to the plane
-            )pbdoc");
-        // TODO add __iter__ interface on DecodedFrame
     }
 };
 

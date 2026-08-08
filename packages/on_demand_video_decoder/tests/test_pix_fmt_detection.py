@@ -128,6 +128,12 @@ def test_decode_from_gop_round_trip(
     assert frames[0].format == expected_format
     planes = frames[0].cuda()
     assert tuple(tuple(plane.shape) for plane in planes) == expected_shapes
+    expected_frame_bytes = {
+        3: 256 * 256 * 3 // 2,  # NV12
+        4: 256 * 256 * 3,  # YUV444
+        5: 256 * 256 * 3,  # P016
+    }[expected_format]
+    assert frames[0].framesize() == expected_frame_bytes
 
     expected_bytes_per_sample = 2 if bit_depth >= 10 else 1
     luma_width = expected_shapes[0][1]
@@ -153,3 +159,12 @@ def test_decode_from_gop_round_trip(
         f"Y plane element size mismatch for {filename}: got "
         f"{actual_bytes_per_sample}B, expected {expected_bytes_per_sample}B"
     )
+
+    if expected_format in (3, 4):
+        nvcv_views = frames[0].nvcv_image()
+        expected_nvcv_shape = (256 + 128, 256, 1) if expected_format == 3 else (256 * 3, 256, 1)
+        expected_nvcv_stride = (256, 2, 1) if expected_format == 3 else (256, 3, 1)
+        assert len(nvcv_views) == 1
+        assert tuple(nvcv_views[0].shape) == expected_nvcv_shape
+        assert tuple(nvcv_views[0].stride) == expected_nvcv_stride
+        assert nvcv_views[0].__cuda_array_interface__["typestr"] == "|u1"

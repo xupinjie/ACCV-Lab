@@ -15,6 +15,7 @@
  */
 
 #include "PyNvBatchAsyncStreamReader.hpp"
+#include "FrameOutput.hpp"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -72,6 +73,8 @@ std::vector<T> process_frames_in_parallel(const std::vector<std::string>& filepa
     return res;
 }
 }  // namespace
+
+namespace frame_output = accvlab::on_demand_video_decoder::internal::frame_output;
 
 PyNvBatchAsyncStreamReader::PyNvBatchAsyncStreamReader(int num_of_set, int num_of_file,
                                                        int max_frames_per_decode_call, int iGpu,
@@ -308,7 +311,8 @@ std::vector<RGBFrame> PyNvBatchAsyncStreamReader::run_rgb_out_1d(const std::vect
         // Only allocate a new reader when there's room AND the file isn't already
         // cached, matching PyNvSampleReader::run_rgb_out's memory-leak guard.
         if (reader_map.notFull() && !reader_map.contains(filepaths[i])) {
-            video_reader = new PyNvVideoReader(filepaths[i], this->gpu_id, this->cu_context, this->cu_stream);
+            video_reader = new PyNvVideoReader(filepaths[i], this->gpu_id, this->cu_context, this->cu_stream,
+                                               this->suppress_no_color_range_given_warning);
         }
         auto cur_video_reader = reader_map.find(filepaths[i], video_reader);
         video_readers[i] = cur_video_reader;
@@ -388,8 +392,6 @@ void PyNvBatchAsyncStreamReader::Decode(const std::vector<std::string>& filepath
             // Videos in a single Decode() call may differ in resolution; each
             // video's own F frames must be uniform (always true for one mp4).
             std::vector<std::tuple<size_t, size_t, size_t>> ref_shape(V);
-            std::vector<std::tuple<size_t, size_t, size_t>> ref_stride(V);
-            std::vector<std::string> ref_typestr(V);
             std::vector<size_t> v_bytes(V, 0);
 
             for (int f = 0; f < F; ++f) {
@@ -407,11 +409,9 @@ void PyNvBatchAsyncStreamReader::Decode(const std::vector<std::string>& filepath
                         // triggers a re-alloc automatically; same-or-smaller
                         // resolutions reuse the existing allocation.
                         ref_shape[v] = frames[v].shape;
-                        ref_stride[v] = frames[v].stride;
-                        ref_typestr[v] = frames[v].typestr;
                         const size_t H = std::get<0>(ref_shape[v]);
                         const size_t W = std::get<1>(ref_shape[v]);
-                        v_bytes[v] = H * W * 3;
+                        v_bytes[v] = frame_output::frame_bytes(frame_output::FrameOutputFormat::RGB8, H, W);
 
                         // TODO: eliminate this D2D copy by having the underlying VideoReader write
                         // directly into agg_pools[v]. Requires GPUMemoryPool move semantics and a
@@ -435,17 +435,9 @@ void PyNvBatchAsyncStreamReader::Decode(const std::vector<std::string>& filepath
                     }
 
                     void* dst = agg_pools[v].AddElement(v_bytes[v]);
-                    CUDA_DRVAPI_CALL(cuMemcpyDtoDAsync(reinterpret_cast<CUdeviceptr>(dst), frames[v].data,
-                                                       v_bytes[v], cu_stream));
-
-                    const std::vector<size_t> shape_vec = {std::get<0>(ref_shape[v]),
-                                                           std::get<1>(ref_shape[v]), 3};
-                    const std::vector<size_t> stride_vec = {
-                        std::get<0>(ref_stride[v]), std::get<1>(ref_stride[v]), std::get<2>(ref_stride[v])};
-                    result.decoded_frames[v].emplace_back(shape_vec, stride_vec, ref_typestr[v],
-                                                          reinterpret_cast<size_t>(cu_stream),
-                                                          reinterpret_cast<CUdeviceptr>(dst),
-                                                          /*readOnly=*/false, /*isBGR=*/as_bgr_cap);
+                    result.decoded_frames[v].emplace_back(
+                        frame_output::copy_rgb_frame(frames[v], reinterpret_cast<CUdeviceptr>(dst), cu_stream,
+                                                     as_bgr_cap, /*is_async=*/true));
                 }
             }
 

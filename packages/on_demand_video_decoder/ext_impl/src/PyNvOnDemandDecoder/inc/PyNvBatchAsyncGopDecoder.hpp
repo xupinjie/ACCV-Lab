@@ -140,15 +140,6 @@ class PyNvBatchAsyncGopDecoder {
                      std::vector<std::string> filepaths, std::vector<std::vector<int>> frame_ids_2d,
                      bool as_bgr, bool is_rgb);
 
-    // Returns the total contiguous byte size of one YUV frame for the given
-    // pixel format and dimensions.  Matches the layout produced by GetYUVFromFrame.
-    static size_t compute_yuv_frame_bytes(Pixel_Format fmt, size_t H, size_t W);
-
-    // Reconstruct a DecodedFrameExt whose views point into aggregator pool memory.
-    static void build_yuv_frame(Pixel_Format fmt, size_t H, size_t W, int64_t timestamp,
-                                DecodedFrameExt::ColorRange color_range, CUdeviceptr dst_ptr, CUstream stream,
-                                DecodedFrameExt& out);
-
    private:
     bool suppress_no_color_range_warning_ = false;
     bool destroy_context_ = false;

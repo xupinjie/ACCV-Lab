@@ -15,7 +15,10 @@
  */
 
 #include "PyDecodedFrameExt.hpp"
+#include "FrameOutput.hpp"
 #include <stdexcept>
+
+namespace frame_output = accvlab::on_demand_video_decoder::internal::frame_output;
 
 DecodedFrameExt::VideoSurfaceFormat DecodedFrameExt::GetVideoSurfaceFormat() const {
     const VideoSurfaceFormat res = ConvertPixelFormatToVideoSurfaceFormatOut(this->format);
@@ -55,25 +58,12 @@ DecodedFrameExt::VideoSurfaceFormat DecodedFrameExt::ConvertPixelFormatToVideoSu
 
 Pixel_Format DecodedFrameExt::ConvertVideoSurfaceFormatInToPixelFormat(
     cudaVideoSurfaceFormat video_format_in) {
-    Pixel_Format res;
-    switch (video_format_in) {
-        case cudaVideoSurfaceFormat::cudaVideoSurfaceFormat_NV12:
-            res = Pixel_Format::Pixel_Format_NV12;
-            break;
-        case cudaVideoSurfaceFormat::cudaVideoSurfaceFormat_P016:
-            res = Pixel_Format::Pixel_Format_P016;
-            break;
-        case cudaVideoSurfaceFormat::cudaVideoSurfaceFormat_YUV444:
-            res = Pixel_Format::Pixel_Format_YUV444;
-            break;
-        case cudaVideoSurfaceFormat::cudaVideoSurfaceFormat_YUV444_16Bit:
-            res = Pixel_Format::Pixel_Format_YUV444_16Bit;
-            break;
-        default:
-            throw std::invalid_argument("Got unexpected value " + std::to_string(video_format_in) +
-                                        " for input argument `video_format_in`.");
+    const Pixel_Format result = frame_output::pixel_format_from_surface(video_format_in);
+    if (result == Pixel_Format_UNDEFINED) {
+        throw std::invalid_argument("Got unexpected value " + std::to_string(video_format_in) +
+                                    " for input argument `video_format_in`.");
     }
-    return res;
+    return result;
 }
 
 DecodedFrameExt::ColorRange DecodedFrameExt::ConvertColorRange(AVColorRange color_range_in) {

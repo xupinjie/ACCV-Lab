@@ -15,6 +15,7 @@
  */
 
 #include "PyNvGopDecoder.hpp"
+#include "FrameOutput.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -32,6 +33,8 @@
 #include "nvtx3/nvtx3.hpp"
 
 #include "ColorConvertKernels.cuh"
+
+namespace frame_output = accvlab::on_demand_video_decoder::internal::frame_output;
 
 void PyNvGopDecoder::get_gop_internal(
     const std::vector<std::string>& filepaths, const std::vector<int> frame_ids,
@@ -809,6 +812,7 @@ int PyNvGopDecoder::main_decode_groups(
         try {
             const size_t slot_idx = decoder_slots[group_idx];
             const AVColorRange color_range = static_cast<AVColorRange>(color_ranges[group_idx]);
+            WarnIfColorRangeUnspecified(color_range, source_names[group_idx]);
             rgb_frames[group_idx].reserve(frame_id_groups[group_idx].size());
 #ifdef PROCESS_SYNC
             DecProc<RGBFrame>(color_range, vdec[slot_idx].get(), rgb_frames[group_idx],
@@ -914,6 +918,7 @@ int PyNvGopDecoder::main_decode(
         try {
             std::vector<int> sorted_frame_ids = {frame_ids[i]};
             if (convert_to_rgb) {
+                WarnIfColorRangeUnspecified(static_cast<AVColorRange>(color_ranges[i]), filepaths[i]);
                 rgb_frames[i].reserve(sorted_frame_ids.size());
             } else {
                 decodedFrames[i].reserve(sorted_frame_ids.size());
@@ -1139,7 +1144,9 @@ SerializedPacketBundle PyNvGopDecoder::createSerializedPacketBundle(
         ptr += sizeof(int32_t);  // width
         *reinterpret_cast<int32_t*>(ptr) = demuxers[i]->GetHeight();
         ptr += sizeof(int32_t);  // height
-        *reinterpret_cast<int32_t*>(ptr) = demuxers[i]->GetFrameSize();
+        *reinterpret_cast<int32_t*>(ptr) = static_cast<int32_t>(frame_output::frame_bytes(
+            frame_output::output_format_from_av_pixel_format(demuxers[i]->GetPixelFormat()),
+            static_cast<size_t>(demuxers[i]->GetHeight()), static_cast<size_t>(demuxers[i]->GetWidth())));
         ptr += sizeof(int32_t);  // frame_size
         *reinterpret_cast<int32_t*>(ptr) = all_gop_lens[i][0];
         ptr += sizeof(int32_t);  // gop_len
@@ -1187,7 +1194,11 @@ SerializedPacketBundle PyNvGopDecoder::createSerializedPacketBundle(
         printf("  codec_id: %d\n", demuxers[i]->GetNvCodecId());
         printf("  width: %d\n", demuxers[i]->GetWidth());
         printf("  height: %d\n", demuxers[i]->GetHeight());
-        printf("  frame_size: %d\n", demuxers[i]->GetFrameSize());
+        printf(
+            "  frame_size: %zu\n",
+            frame_output::frame_bytes(
+                frame_output::output_format_from_av_pixel_format(demuxers[i]->GetPixelFormat()),
+                static_cast<size_t>(demuxers[i]->GetHeight()), static_cast<size_t>(demuxers[i]->GetWidth())));
         printf("  gop_len: %d\n", all_gop_lens[i][0]);
         printf("  first_frame_id: %d\n", all_first_frame_ids[i][0]);
 

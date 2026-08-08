@@ -256,7 +256,6 @@ PyNvGopDecoder::~PyNvGopDecoder() {
 
 void Init_PyNvGopDecoder(py::module& m) {
     ExternalBuffer::Export(m);
-    DecodedFrame::Export(m);
     CAIMemoryView::Export(m);
     DecodedFrameExt::Export(m);
     RGBFrame::Export(m);
@@ -309,38 +308,10 @@ void Init_PyNvGopDecoder(py::module& m) {
         },
         py::arg("maxfiles"), py::arg("iGpu") = 0, py::arg("suppressNoColorRangeWarning") = false,
         R"pbdoc(
-        Create a GPU-accelerated video decoder with GOP-level random access.
+        Create the native GPU decoder.
 
-        Factory function for the on-demand video decoding module, which provides:
-
-        - **Random frame access**: Decode any frame by index without sequential scanning,
-          using :meth:`PyNvGopDecoder.Decode` or :meth:`PyNvGopDecoder.DecodeN12ToRGB`.
-        - **Demux/decode separation**: Extract serialized GOP bundles first via
-          :meth:`PyNvGopDecoder.GetGOPList`, then decode on
-          GPU later. This enables caching, prefetching, and DataLoader-friendly pipelines.
-        - **GOP persistence**: Save serialized GOP bundles to disk with :func:`SaveGopToFile`
-          and reload it with :meth:`PyNvGopDecoder.LoadGopsToList`, avoiding redundant
-          demuxing across training runs.
-
-        Args:
-            maxfiles: Maximum number of video files that can be processed concurrently.
-            iGpu: GPU device ID to use for decoding (0 for primary GPU)
-            suppressNoColorRangeWarning: Suppress warning when no color range information
-                                         can be extracted from video files (limited/MPEG
-                                         range is assumed in that case). Currently has no
-                                         effect in this decoder.
-
-        Returns:
-            :class:`PyNvGopDecoder` instance configured with the specified parameters
-
-        Raises:
-            RuntimeError: If parameters are invalid
-
-        Example:
-            >>> decoder = CreateGopDecoder(maxfiles=3, iGpu=0)
-            >>> frames = decoder.Decode(['v0.mp4', 'v1.mp4', 'v2.mp4'], [0, 10, 20])
-            >>> # Convert to PyTorch tensors on GPU (NV12 layout: (height * 3 // 2, width), uint8)
-            >>> nv12_tensors = [torch.as_tensor(frame).clone() for frame in frames]
+        See :func:`~accvlab.on_demand_video_decoder.CreateGopDecoder` for the public API
+        and full documentation.
         )pbdoc");
 
     m.def(
