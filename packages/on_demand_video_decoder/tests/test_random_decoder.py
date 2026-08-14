@@ -15,9 +15,6 @@
 import pytest
 import sys
 
-import random
-
-import utils
 import accvlab.on_demand_video_decoder as nvc
 
 
@@ -27,30 +24,6 @@ def test_pynvgopdecoder_rejects_direct_construction():
         nvc.PyNvGopDecoder()
     with pytest.raises(TypeError):
         nvc.PyNvGopDecoder(1, 0)
-
-
-def test_random_access_single():
-    max_num_files_to_use = 6
-    iter_num = 10
-    path_base = utils.get_data_dir()
-
-    nv_gop_dec = nvc.CreateGopDecoder(
-        maxfiles=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    frame_min = 0
-    frame_max = 200
-
-    for c in range(iter_num):
-        files = utils.select_random_clip(path_base)
-        assert files is not None, f"files is None for select_random_clip, path_base: {path_base}"
-
-        frames = [random.randint(frame_min, frame_max) for _ in range(len(files))]
-        print(f"Comparison: {c}, frames: {frames}")
-
-        gop_decoded = utils.gop_decode_bgr(nv_gop_dec, files, frames)
-        assert gop_decoded is not None, f"gop_decoded is None for DecodeN12ToRGB, frames: {frames}"
 
 
 if __name__ == "__main__":

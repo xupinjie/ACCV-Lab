@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Separate demux/decode workflows are covered by the common decoder tests."""
+"""Shared decoder conformance tests."""

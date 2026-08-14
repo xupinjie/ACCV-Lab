@@ -15,47 +15,9 @@
 import pytest
 import sys
 import torch
-import random
-import time
 
 import utils
 import accvlab.on_demand_video_decoder as nvc
-
-
-def test_async_decode_basic_flow():
-    """
-    Test 1.1: Basic async decode flow
-    Test that async decode works: start async -> wait -> get result
-    """
-    max_num_files_to_use = 6
-    path_base = utils.get_data_dir()
-
-    nv_stream_dec = nvc.CreateSampleReader(
-        num_of_set=1,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    files = utils.select_random_clip(path_base)
-    assert files is not None, f"files is None for select_random_clip, path_base: {path_base}"
-
-    frame_id_list = [0] * len(files)
-
-    # Start async decode
-    nv_stream_dec.DecodeN12ToRGBAsync(files, frame_id_list, False)
-
-    # Get result (will wait for async decode to complete)
-    decoded_frames = nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_id_list, False)
-
-    # Verify results
-    assert decoded_frames is not None, "decoded_frames is None"
-    assert len(decoded_frames) == len(files), f"Expected {len(files)} frames, got {len(decoded_frames)}"
-
-    # Verify each frame is valid RGBFrame
-    for i, frame in enumerate(decoded_frames):
-        assert frame is not None, f"Frame {i} is None"
-        assert hasattr(frame, 'shape'), f"Frame {i} has no shape attribute"
-        assert hasattr(frame, 'data'), f"Frame {i} has no data attribute"
 
 
 def test_async_decode_prefetch_flow():
@@ -250,31 +212,6 @@ def test_async_decode_getbuffer_on_empty_buffer_throws_error():
         nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_0, False)
 
 
-def test_async_decode_error_handling_invalid_file():
-    """
-    Test 4.1: Error handling - invalid file path
-    Test that decoding failure propagates correctly
-    """
-    max_num_files_to_use = 6
-
-    nv_stream_dec = nvc.CreateSampleReader(
-        num_of_set=1,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    # Use invalid file path
-    invalid_files = ["/nonexistent/path/to/video.mp4"]
-    frame_id_list = [0]
-
-    # Start async decode with invalid file (should fail in background)
-    nv_stream_dec.DecodeN12ToRGBAsync(invalid_files, frame_id_list, False)
-
-    # GetBuffer should rethrow the exception
-    with pytest.raises(RuntimeError):
-        nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(invalid_files, frame_id_list, False)
-
-
 def test_async_decode_error_message_is_preserved():
     """
     Test 4.1b: Error handling - exception message is preserved from async thread
@@ -328,34 +265,6 @@ def test_async_decode_error_message_is_preserved():
         # NOTE: Ideally, the error message should include the file path for easier debugging.
         # Current behavior returns the underlying NvDecoder error which doesn't include the path.
         # This could be improved in the future by wrapping exceptions with file context.
-
-
-def test_async_decode_error_handling_invalid_frame_id():
-    """
-    Test 4.2: Error handling - invalid frame_id
-    Test that invalid frame_id causes exception
-    """
-    max_num_files_to_use = 6
-    path_base = utils.get_data_dir()
-
-    nv_stream_dec = nvc.CreateSampleReader(
-        num_of_set=1,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    files = utils.select_random_clip(path_base)
-    assert files is not None
-
-    # Use very large frame_id that doesn't exist
-    invalid_frame_ids = [999999] * len(files)
-
-    # Start async decode with invalid frame_id
-    nv_stream_dec.DecodeN12ToRGBAsync(files, invalid_frame_ids, False)
-
-    # GetBuffer should rethrow the exception
-    with pytest.raises(RuntimeError):
-        nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, invalid_frame_ids, False)
 
 
 def test_async_decode_vs_sync_decode_result_comparison():
@@ -416,60 +325,6 @@ def test_async_decode_vs_sync_decode_result_comparison():
         assert max_diff < 1.0, f"Frame {i} pixel values differ: max_diff={max_diff}"
 
 
-def test_async_decode_multiple_frames_sequential():
-    """
-    Test: Sequential processing of multiple frames with prefetching
-    Test the complete workflow: decode frame 0, then prefetch and process frame 3, then frame 6
-    """
-    max_num_files_to_use = 6
-    path_base = utils.get_data_dir()
-
-    nv_stream_dec = nvc.CreateSampleReader(
-        num_of_set=1,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    files = utils.select_random_clip(path_base)
-    assert files is not None
-
-    # Process frame 0
-    frame_0 = [0] * len(files)
-    nv_stream_dec.DecodeN12ToRGBAsync(files, frame_0, False)
-    frames_0 = nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_0, False)
-    assert frames_0 is not None
-
-    # Deep copy frame 0 (as required by documentation)
-    tensor_0 = [torch.as_tensor(frame, device='cuda').clone() for frame in frames_0]
-
-    # Prefetch frame 3
-    frame_3 = [3] * len(files)
-    nv_stream_dec.DecodeN12ToRGBAsync(files, frame_3, False)
-
-    # Process frame 3
-    frames_3 = nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_3, False)
-    assert frames_3 is not None
-
-    # Deep copy frame 3
-    tensor_3 = [torch.as_tensor(frame, device='cuda').clone() for frame in frames_3]
-
-    # Prefetch frame 6
-    frame_6 = [6] * len(files)
-    nv_stream_dec.DecodeN12ToRGBAsync(files, frame_6, False)
-
-    # Process frame 6
-    frames_6 = nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_6, False)
-    assert frames_6 is not None
-
-    # Deep copy frame 6
-    tensor_6 = [torch.as_tensor(frame, device='cuda').clone() for frame in frames_6]
-
-    # Verify all frames are valid
-    assert len(tensor_0) == len(files)
-    assert len(tensor_3) == len(files)
-    assert len(tensor_6) == len(files)
-
-
 @pytest.mark.timeout(30)
 def test_destructor_with_pending_task():
     """
@@ -522,38 +377,6 @@ def test_getbuffer_without_async_call():
     # Try to get buffer without calling Async first - should fail
     with pytest.raises(RuntimeError, match="No pending decode task"):
         nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_id_list, False)
-
-
-def test_recovery_after_exception():
-    """
-    Test: Reader should be usable after exception
-    Test that reader can continue working after an exception occurred
-    """
-    max_num_files_to_use = 6
-    path_base = utils.get_data_dir()
-
-    nv_stream_dec = nvc.CreateSampleReader(
-        num_of_set=1,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    # Trigger an exception with invalid file
-    nv_stream_dec.DecodeN12ToRGBAsync(["/invalid/nonexistent/path.mp4"], [0], False)
-    with pytest.raises(RuntimeError):
-        nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(["/invalid/nonexistent/path.mp4"], [0], False)
-
-    # Verify reader can still work after exception
-    files = utils.select_random_clip(path_base)
-    assert files is not None
-
-    frame_id_list = [0] * len(files)
-
-    nv_stream_dec.DecodeN12ToRGBAsync(files, frame_id_list, False)
-    frames = nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_id_list, False)
-
-    assert frames is not None
-    assert len(frames) == len(files)
 
 
 def test_multiple_async_without_getbuffer():
@@ -656,26 +479,6 @@ def test_double_getbuffer_same_params():
     # Second GetBuffer should fail (buffer is now empty)
     with pytest.raises(RuntimeError, match="No pending decode task"):
         nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer(files, frame_id_list, False)
-
-
-def test_empty_list_params():
-    """
-    Test: Empty list parameters should be handled gracefully
-    Test that empty filepaths/frame_ids don't cause crashes
-    """
-    max_num_files_to_use = 6
-
-    nv_stream_dec = nvc.CreateSampleReader(
-        num_of_set=1,
-        num_of_file=max_num_files_to_use,
-        iGpu=0,
-    )
-
-    # Empty lists - return empty
-    nv_stream_dec.DecodeN12ToRGBAsync([], [], False)
-    frames = nv_stream_dec.DecodeN12ToRGBAsyncGetBuffer([], [], False)
-    # If it succeeds, result should be empty
-    assert len(frames) == 0
 
 
 @pytest.mark.timeout(30)

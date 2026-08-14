@@ -266,9 +266,9 @@ void PyNvBatchAsyncGopDecoder::build_yuv_frame(Pixel_Format fmt, size_t H, size_
             break;
         // TODO(P016): LoadDLPack rejects "|u2" typestr, so no DLPack tensor can be built.
         case Pixel_Format_P016:
-            out.views.push_back(CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u2", stream_id, dst_ptr, false});
+            out.views.push_back(CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr, false});
             out.views.push_back(CAIMemoryView{
-                {H / 2, W / 2, 2}, {W / 2 * 2, 2, 1}, "|u2", stream_id, dst_ptr + 2 * H * W, false});
+                {H / 2, W / 2, 2}, {W * 2, 4, 2}, "|u2", stream_id, dst_ptr + 2 * H * W, false});
             break;
         // TODO(YUV444): needs a flat (H*3, W) DLPack view and extBuf support for 3-plane layouts.
         case Pixel_Format_YUV444:

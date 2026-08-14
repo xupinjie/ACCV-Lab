@@ -141,14 +141,14 @@ int PyNvGopDecoder::GetYUVFromFrame(NvDecoder* decoder, const uint8_t* pFrame, u
         } break;
         case Pixel_Format_P016: {
             decoded_frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                        {width, 1, 1},
+                                                        {width * 2, 2, 2},
                                                         "|u2",
                                                         reinterpret_cast<size_t>(decoder->GetStream()),
                                                         (CUdeviceptr)(pFrame_buffer),
                                                         false});
             decoded_frame.views.push_back(
                 CAIMemoryView{{height / 2, width / 2, 2},
-                              {width / 2 * 2, 2, 1},
+                              {width * 2, 4, 2},
                               "|u2",
                               reinterpret_cast<size_t>(decoder->GetStream()),
                               (CUdeviceptr)(pFrame_buffer + 2 * (width * height)),

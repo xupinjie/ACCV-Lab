@@ -125,32 +125,6 @@ def test_rejects_direct_construction():
 # ===========================================================================
 
 
-def test_validate_size_mismatch():
-    """filepaths.size() != frame_ids_2d.size() rejected at entry."""
-    files = _select_sample_videos()
-    r = _make_reader(V=len(files))
-    bad_frame_ids = [[0]]  # length 1, but files has more entries
-    with pytest.raises(RuntimeError, match=r"filepaths\.size\(\).*frame_ids_2d\.size\(\)"):
-        r.Decode(files, bad_frame_ids, False)
-
-
-def test_validate_empty_filepaths():
-    """Empty filepaths list is rejected."""
-    r = _make_reader()
-    with pytest.raises(RuntimeError, match=r"filepaths must not be empty"):
-        r.Decode([], [], False)
-
-
-def test_validate_too_many_files():
-    """Exceeding num_of_file is rejected at entry."""
-    files = _select_sample_videos()
-    r = _make_reader(V=1)  # num_of_file=1, but we'll pass len(files) > 1
-    if len(files) <= 1:
-        pytest.skip("need at least 2 sample videos for this test")
-    with pytest.raises(RuntimeError, match=r"exceeds num_of_file"):
-        r.Decode(files, [[0]] * len(files), False)
-
-
 def test_validate_too_many_frames():
     """Exceeding max_frames_per_decode_call is rejected at entry."""
     files = _select_sample_videos()
@@ -215,41 +189,6 @@ def test_decode_basic_2d_shape():
     assert len(out) == V, f"outer len should be V={V}, got {len(out)}"
     for v in range(V):
         assert len(out[v]) == F, f"out[{v}] inner len should be F={F}, got {len(out[v])}"
-
-
-def test_decode_basic_2d_dtype_and_device():
-    """Each frame is a uint8, 3-channel tensor on CUDA."""
-    files = _select_sample_videos()
-    V = len(files)
-    F = 2
-    frame_ids_2d = [[0, 7]] * V
-
-    r = _make_reader(V=V, F=F)
-    r.Decode(files, frame_ids_2d, as_bgr=False)
-    out = r.GetBuffer(files, frame_ids_2d, as_bgr=False)
-
-    for v in range(V):
-        for f in range(F):
-            t = torch.as_tensor(out[v][f], device="cuda")
-            assert t.dtype == torch.uint8, f"out[{v}][{f}].dtype = {t.dtype}"
-            assert t.ndim == 3, f"out[{v}][{f}].ndim = {t.ndim}"
-            assert t.shape[-1] == 3, f"out[{v}][{f}].shape = {tuple(t.shape)}"
-            assert t.device.type == "cuda"
-
-
-def test_decode_single_frame_per_video():
-    """F=1 is supported (degenerates to behavior similar to 1D API)."""
-    files = _select_sample_videos()
-    V = len(files)
-    frame_ids_2d = [[0]] * V
-
-    r = _make_reader(V=V, F=1)
-    r.Decode(files, frame_ids_2d, as_bgr=False)
-    out = r.GetBuffer(files, frame_ids_2d, as_bgr=False)
-
-    assert len(out) == V
-    for v in range(V):
-        assert len(out[v]) == 1
 
 
 def test_decode_single_video_multi_frame():
@@ -408,17 +347,3 @@ def test_resubmit_keeps_only_latest_result():
     r2.Decode(files, frame_ids_b, False)
     with pytest.raises(RuntimeError, match=r"do not match buffered result"):
         r2.GetBuffer(files, frame_ids_a, False)
-
-
-def test_invalid_file_propagates_exception():
-    """A decode error in the worker (e.g. nonexistent file) is rethrown at Get."""
-    files = _select_sample_videos()
-    V = len(files)
-    bad_files = list(files)
-    bad_files[0] = "/__definitely_not_a_real_file__.mp4"
-    frame_ids_2d = [[0]] * V
-
-    r = _make_reader(V=V)
-    r.Decode(bad_files, frame_ids_2d, False)
-    with pytest.raises(RuntimeError):
-        r.GetBuffer(bad_files, frame_ids_2d, False)

@@ -12,4 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Separate demux/decode workflows are covered by the common decoder tests."""
+"""Extension point for a future independent binary correctness checker."""
+
+from __future__ import annotations
+
+from typing import Protocol, Sequence
+
+from common.adapters import OutputFormat
+from common.model import CanonicalFrame, DecodeCase
+
+
+class BinaryCorrectnessChecker(Protocol):
+    """Optional checker supplied by an environment with an approved reference."""
+
+    def validate(
+        self,
+        case: DecodeCase,
+        output_format: OutputFormat,
+        frames: Sequence[CanonicalFrame],
+    ) -> None: ...
