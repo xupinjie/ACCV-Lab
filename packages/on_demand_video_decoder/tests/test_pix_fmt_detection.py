@@ -37,6 +37,11 @@ import utils
 
 VARIANTS_DIR = os.path.join(utils.get_data_dir(), "pix_fmt_variants")
 
+PIXEL_FORMAT_NV12 = 3
+PIXEL_FORMAT_YUV444 = 4
+PIXEL_FORMAT_P016 = 5
+PIXEL_FORMAT_YUV444_16BIT = 6
+
 
 # Each variant lists the filename, the codec_tag carried by the container, the
 # bit-depth the stream actually encodes, and the dtype that should appear on the
@@ -48,6 +53,7 @@ VARIANTS = [
     ("hevc_hev1_yuv420p10le.mp4", "hev1", 10, 5, "|u2", ((256, 256, 1), (128, 128, 2))),
     ("hevc_hvc1_yuv420p.mp4", "hvc1", 8, 3, "|u1", ((256, 256, 1), (128, 128, 2))),
     ("hevc_hvc1_yuv420p10le.mp4", "hvc1", 10, 5, "|u2", ((256, 256, 1), (128, 128, 2))),
+    ("hevc_hvc1_yuv444p.mp4", "hvc1", 8, 4, "|u1", ((256, 256, 1),) * 3),
     ("h264_avc1_yuv420p.mp4", "avc1", 8, 3, "|u1", ((256, 256, 1), (128, 128, 2))),
 ]
 
@@ -57,6 +63,34 @@ def _video_path(name):
     if not os.path.exists(path):
         pytest.skip(f"test asset missing: {path}")
     return path
+
+
+def _expected_plane_strides(pixel_format, luma_width, bytes_per_sample):
+    if pixel_format in (PIXEL_FORMAT_NV12, PIXEL_FORMAT_P016):
+        # Semi-planar 4:2:0: one Y plane followed by one interleaved UV plane.
+        return (
+            (
+                luma_width * bytes_per_sample,
+                bytes_per_sample,
+                bytes_per_sample,
+            ),
+            (
+                luma_width * bytes_per_sample,
+                2 * bytes_per_sample,
+                bytes_per_sample,
+            ),
+        )
+
+    if pixel_format in (PIXEL_FORMAT_YUV444, PIXEL_FORMAT_YUV444_16BIT):
+        # Planar 4:4:4: Y, U, and V are three full-resolution planes.
+        plane_strides = (
+            luma_width * bytes_per_sample,
+            bytes_per_sample,
+            bytes_per_sample,
+        )
+        return (plane_strides,) * 3
+
+    raise ValueError(f"unsupported pixel format in stride check: {pixel_format}")
 
 
 @pytest.mark.parametrize(
@@ -97,17 +131,10 @@ def test_decode_from_gop_round_trip(
 
     expected_bytes_per_sample = 2 if bit_depth >= 10 else 1
     luma_width = expected_shapes[0][1]
-    expected_strides = (
-        (
-            luma_width * expected_bytes_per_sample,
-            expected_bytes_per_sample,
-            expected_bytes_per_sample,
-        ),
-        (
-            luma_width * expected_bytes_per_sample,
-            2 * expected_bytes_per_sample,
-            expected_bytes_per_sample,
-        ),
+    expected_strides = _expected_plane_strides(
+        expected_format,
+        luma_width,
+        expected_bytes_per_sample,
     )
     actual_strides = tuple(tuple(plane.__cuda_array_interface__["strides"]) for plane in planes)
     assert (

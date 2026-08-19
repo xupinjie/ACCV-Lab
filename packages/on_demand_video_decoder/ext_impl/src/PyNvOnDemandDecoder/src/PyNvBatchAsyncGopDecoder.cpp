@@ -280,11 +280,11 @@ void PyNvBatchAsyncGopDecoder::build_yuv_frame(Pixel_Format fmt, size_t H, size_
             break;
         // TODO(YUV444_16Bit): same as P016 — LoadDLPack rejects "|u2".
         case Pixel_Format_YUV444_16Bit:
-            out.views.push_back(CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u2", stream_id, dst_ptr, false});
+            out.views.push_back(CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr, false});
             out.views.push_back(
-                CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u2", stream_id, dst_ptr + 2 * H * W, false});
+                CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr + 2 * H * W, false});
             out.views.push_back(
-                CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u2", stream_id, dst_ptr + 4 * H * W, false});
+                CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr + 4 * H * W, false});
             break;
         default:
             // Only NV12 is currently supported. Returning a DecodedFrameExt with an empty extBuf
