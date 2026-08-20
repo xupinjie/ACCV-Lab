@@ -541,8 +541,10 @@ void Init_PyNvGopDecoder(py::module& m) {
                         // Create numpy array from serialized data for this video
                         auto capsule = py::capsule(bundle.data.release(),
                                                    [](void* ptr) { delete[] static_cast<uint8_t*>(ptr); });
-                        py::array_t<uint8_t> numpy_data(
-                            bundle.size, static_cast<uint8_t*>(capsule.get_pointer()), capsule);
+                        py::array_t<uint8_t> numpy_data({static_cast<py::ssize_t>(bundle.size)},
+                                                        {static_cast<py::ssize_t>(sizeof(uint8_t))},
+                                                        static_cast<uint8_t*>(capsule.get_pointer()),
+                                                        capsule);
 
                         // Create tuple (numpy_data, first_frame_ids, gop_lens) for this video
                         py::tuple video_tuple =
@@ -1218,7 +1220,9 @@ void Init_PyNvGopDecoder(py::module& m) {
                             py::capsule(raw_ptr, [](void* ptr) { delete[] static_cast<uint8_t*>(ptr); });
 
                         // Create numpy array
-                        py::array_t<uint8_t> numpy_data(size, raw_ptr, capsule);
+                        py::array_t<uint8_t> numpy_data({static_cast<py::ssize_t>(size)},
+                                                        {static_cast<py::ssize_t>(sizeof(uint8_t))}, raw_ptr,
+                                                        capsule);
 
                         result_list.append(std::move(numpy_data));
                     }
