@@ -19,6 +19,9 @@ This module tests the useGOPCache parameter for the GetGOPList method,
 including cache hit/miss scenarios, cache management, and data correctness.
 """
 
+from pathlib import Path
+
+import numpy as np
 import pytest
 import sys
 import torch
@@ -45,6 +48,17 @@ def _gop_ranges(gop_list):
     first_ids = [bundle[1][0] for bundle in gop_list]
     gop_lens = [bundle[2][0] for bundle in gop_list]
     return first_ids, gop_lens
+
+
+def _assert_contiguous_byte_bundle(bundle: np.ndarray, expected: bytes) -> None:
+    assert isinstance(bundle, np.ndarray)
+    assert bundle.dtype == np.dtype(np.uint8)
+    assert bundle.ndim == 1
+    assert bundle.itemsize == 1
+    assert bundle.strides == (1,)
+    assert bundle.flags.c_contiguous
+    assert bundle.nbytes == len(expected)
+    assert bundle.tobytes() == expected
 
 
 class TestGetGOPListCache:
@@ -94,6 +108,19 @@ class TestGetGOPListCache:
             assert all(not hit for hit in cache_hits), "First call should be all cache misses"
 
         print(f"✓ Test passed: Got {len(gop_list)} GOP bundles")
+
+    def test_gop_bundle_numpy_layout(self, decoder, tmp_path):
+        """Serialized GOP bundles stay contiguous on NumPy 1.x and 2.x."""
+        sample_video = Path(utils.get_data_dir()) / "sample_clip" / "moving_shape_circle_h265.mp4"
+        bundle = decoder.GetGOPList([str(sample_video)], [10], useGOPCache=False)[0][0]
+
+        gop_path = tmp_path / "serialized.gop"
+        nvc.SaveGopToFile(bundle, str(gop_path))
+        expected = gop_path.read_bytes()
+        _assert_contiguous_byte_bundle(bundle, expected)
+
+        loaded = decoder.LoadGopsToList([str(gop_path)])[0]
+        _assert_contiguous_byte_bundle(loaded, expected)
 
     def test_getgoplist_cache_hit(self, decoder, test_files_and_frames):
         """
