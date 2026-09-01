@@ -26,6 +26,7 @@
 #include "PyRGBFrame.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cuda.h>
@@ -67,8 +68,6 @@ class PyNvVideoReader {
      */
     void ReleaseMemPools();
 
-    static Pixel_Format GetNativeFormat(const cudaVideoSurfaceFormat inputFormat);
-
     std::vector<DecodedFrameExt> run(const std::vector<int> frame_ids);
 
     DecodedFrameExt run_single(const int frame_id);
@@ -89,9 +88,6 @@ class PyNvVideoReader {
     void releasePacketArray();
     void startNewGop();
     void startNextGop();
-    DecodedFrameExt returnYUVFrame(void* pFrame_buffer, void* pFrame);
-    RGBFrame returnRGBFrame(void* pFrame_buffer, void* pFrame, bool use_bgr_format,
-                            bool& file_added_for_warning);
     void run_single_frame_internal(const int frame_ids, bool convert_to_rgb, bool as_bgr,
                                    DecodedFrameExt* out_if_no_color_conversion,
                                    RGBFrame* out_if_color_converted);
@@ -99,17 +95,20 @@ class PyNvVideoReader {
     void fetchNewGop(int cur_keyframe);
     void decodeNextPacket();
     bool processDecodedFrames(const int frame_id, uint8_t* pFrame, uint8_t* pReturnFrame, bool convert_to_rgb,
-                              bool use_bgr_format, bool& file_added_for_warning,
-                              RGBFrame* out_if_color_converted, DecodedFrameExt* out_if_no_color_conversion);
+                              bool use_bgr_format, RGBFrame* out_if_color_converted,
+                              DecodedFrameExt* out_if_no_color_conversion);
     static void demuxGopProcZeroLen(PyNvGopDemuxer* demuxer,
                                     ConcurrentQueue<std::tuple<uint8_t*, int, int>>* packet_queue,
                                     const int key_frame_ids, std::vector<uint8_t*>& packet_array,
                                     bool seeking);
 
    private:
+    void WarnIfColorRangeUnspecified(AVColorRange color_range);
+
     std::string filename = {};
 
     bool suppress_no_color_range_given_warning = false;
+    std::atomic<bool> has_warned_no_color_range_ = false;
     bool destroy_context = false;
     CUcontext cu_context = NULL;
     bool owner_stream = false;

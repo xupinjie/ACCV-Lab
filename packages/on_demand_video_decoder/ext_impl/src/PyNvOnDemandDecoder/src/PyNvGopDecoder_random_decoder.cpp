@@ -15,6 +15,7 @@
  */
 
 #include "PyNvGopDecoder.hpp"
+#include "FrameOutput.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -35,6 +36,7 @@
 #define MAX_SIZE 2000
 
 namespace fs = std::filesystem;
+namespace frame_output = accvlab::on_demand_video_decoder::internal::frame_output;
 
 void PyNvGopDecoder::decode_from_video(const std::vector<std::string>& filepaths,
                                        const std::vector<int> frame_ids, bool convert_to_rgb, bool as_bgr,
@@ -94,7 +96,9 @@ void PyNvGopDecoder::decode_from_video(const std::vector<std::string>& filepaths
         codec_ids[i] = demuxers[i]->GetNvCodecId();
         widths[i] = demuxers[i]->GetWidth();
         heights[i] = demuxers[i]->GetHeight();
-        frame_sizes[i] = demuxers[i]->GetFrameSize();
+        frame_sizes[i] = static_cast<int>(frame_output::frame_bytes(
+            frame_output::output_format_from_av_pixel_format(demuxers[i]->GetPixelFormat()),
+            static_cast<size_t>(heights[i]), static_cast<size_t>(widths[i])));
     }
 
     st = InitGpuMemPool(heights, widths, frame_sizes, convert_to_rgb);
@@ -145,6 +149,7 @@ void PyNvGopDecoder::decode_from_video(const std::vector<std::string>& filepaths
                 }
             }
             if (convert_to_rgb) {
+                WarnIfColorRangeUnspecified(demuxers[i]->GetColorRange(), filepaths[i]);
                 rgb_frames[i].reserve(1);
             } else {
                 decodedFrames[i].reserve(1);

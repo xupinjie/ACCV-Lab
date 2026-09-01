@@ -49,6 +49,7 @@ set(PY_SOURCES
       src/PyNvOnDemandDecoder.cpp
       src/PyCAIMemoryView.cpp
       src/PyDecodedFrameExt.cpp
+      src/FrameOutput.cpp
       src/PyNvGopDecoder_common.cpp
       src/PyNvGopDecoder_constructors.cpp
       src/PyNvGopDecoder_random_decoder.cpp

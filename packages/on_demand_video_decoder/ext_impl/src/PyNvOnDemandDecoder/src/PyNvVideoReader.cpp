@@ -15,6 +15,7 @@
  */
 
 #include "PyNvVideoReader.hpp"
+#include "FrameOutput.hpp"
 #include "GopDecoderUtils.hpp"
 
 #include <algorithm>
@@ -30,11 +31,10 @@
 
 #include "nvtx3/nvtx3.hpp"
 
-#include "ColorConvertKernels.cuh"
-
 #define MAX_SIZE 2000
 
 namespace fs = std::filesystem;
+namespace frame_output = accvlab::on_demand_video_decoder::internal::frame_output;
 
 /* If a frame is a I-frame and key_frame in the same time, then the frame is the
  start of a new GOP The keyframe is the frame which has flag AV_FRAME_FLAG_KEY
@@ -97,22 +97,6 @@ void PyNvVideoReader::parse_keyframe_idx(std::vector<int>& key_frame_ids, std::m
     if (key_frame_ids.size() <= 0) {
         throw std::out_of_range("[ERROR] The video must have at least one GOP");
     }
-}
-
-Pixel_Format PyNvVideoReader::GetNativeFormat(const cudaVideoSurfaceFormat inputFormat) {
-    switch (inputFormat) {
-        case cudaVideoSurfaceFormat_NV12:
-            return Pixel_Format_NV12;
-        case cudaVideoSurfaceFormat_P016:
-            return Pixel_Format_P016;
-        case cudaVideoSurfaceFormat_YUV444:
-            return Pixel_Format_YUV444;
-        case cudaVideoSurfaceFormat_YUV444_16Bit:
-            return Pixel_Format_YUV444_16Bit;
-        default:
-            break;
-    }
-    return Pixel_Format_UNDEFINED;
 }
 
 PyNvVideoReader::PyNvVideoReader(const std::string filename, int iGpu, CUcontext cu_context,
@@ -277,6 +261,7 @@ void PyNvVideoReader::startNextGop() { this->releasePacketArray(); }
 
 void PyNvVideoReader::ReplaceWithFile(const std::string filename) {
     this->releasePacketArray();
+    this->has_warned_no_color_range_.store(false);
     nvtxRangePushA("Reset Demuxer");
     this->demuxer.reset(new PyNvGopDemuxer(filename.c_str()));
     nvtxRangePop();
@@ -516,30 +501,21 @@ void PyNvVideoReader::run_single_frame_internal(const int frame_id, bool convert
     ck(cuCtxPushCurrent(this->cu_context));
     nvtxRangePushA("Decode Single Frame");
 
-    size_t needed_size = 0;
-
-    if (convert_to_rgb) {
-        needed_size = this->demuxer->GetWidth() * this->demuxer->GetHeight() * 3;
-    } else {
-        needed_size = this->demuxer->GetFrameSize();
-    }
+    const frame_output::FrameOutputFormat output_format =
+        convert_to_rgb ? frame_output::FrameOutputFormat::RGB8
+                       : frame_output::output_format_from_av_pixel_format(demuxer->GetPixelFormat());
+    const size_t needed_size = frame_output::frame_bytes(
+        output_format, static_cast<size_t>(demuxer->GetHeight()), static_cast<size_t>(demuxer->GetWidth()));
 
     gpu_mem_pool.EnsureSizeAndSoftReset(needed_size, false);
 
     // Note that the following difference needs to be computed with signed
     // integers as the difference may be negative
-    // TODO, the size of the allocated buffer for decoded Frames should be
-    // dec->GetFrameSize()
+    // Output allocations use the package-wide tightly packed frame size.
     uint8_t *pReturnFrame = nullptr, *pFrame = nullptr;
     int64_t timestamp = 0;
-    bool file_added_for_warning = false;
 
-    if (convert_to_rgb) {
-        pFrame = reinterpret_cast<uint8_t*>(
-            this->gpu_mem_pool.AddElement(this->demuxer->GetWidth() * this->demuxer->GetHeight() * 3));
-    } else {
-        pFrame = reinterpret_cast<uint8_t*>(this->gpu_mem_pool.AddElement(this->demuxer->GetFrameSize()));
-    }
+    pFrame = reinterpret_cast<uint8_t*>(this->gpu_mem_pool.AddElement(needed_size));
 
     if (frame_id >= this->next_keyframe_) {
         auto cur_keyframe_ = demuxer->getKeyFrameId(frame_id);
@@ -565,8 +541,7 @@ void PyNvVideoReader::run_single_frame_internal(const int frame_id, bool convert
     while (this->cur_frame_ < frame_id) {
         // First try to process any pending decoded frames
         if (this->processDecodedFrames(frame_id, pFrame, pReturnFrame, convert_to_rgb, use_bgr_format,
-                                       file_added_for_warning, out_if_color_converted,
-                                       out_if_no_color_conversion)) {
+                                       out_if_color_converted, out_if_no_color_conversion)) {
             nvtxRangePop();
             ck(cuCtxPopCurrent(NULL));
             return;
@@ -581,25 +556,26 @@ void PyNvVideoReader::run_single_frame_internal(const int frame_id, bool convert
 
         // Process any newly decoded frames
         if (processDecodedFrames(frame_id, pFrame, pReturnFrame, convert_to_rgb, use_bgr_format,
-                                 file_added_for_warning, out_if_color_converted,
-                                 out_if_no_color_conversion)) {
+                                 out_if_color_converted, out_if_no_color_conversion)) {
             nvtxRangePop();
             ck(cuCtxPopCurrent(NULL));
             return;
         }
     }
 
-    if (!suppress_no_color_range_given_warning) {
-        if (file_added_for_warning) {
-            std::cout << "WARNING: PyNVGopDecoder could not obtain color range for "
-                         "the following files:\n";
-            std::cout << "  " << this->filename << "\n";
-            std::cout << "  --> Limited range (MPEG range) assumed for these files." << std::endl;
-        }
-    }
-
     ck(cuCtxPopCurrent(NULL));
     nvtxRangePop();
+}
+
+void PyNvVideoReader::WarnIfColorRangeUnspecified(AVColorRange color_range) {
+    if (suppress_no_color_range_given_warning || color_range == AVColorRange::AVCOL_RANGE_JPEG ||
+        color_range == AVColorRange::AVCOL_RANGE_MPEG || has_warned_no_color_range_.exchange(true)) {
+        return;
+    }
+
+    std::cout << "WARNING: PyNvVideoReader could not obtain color range for:\n"
+              << "  " << filename << "\n"
+              << "  --> Limited range (MPEG range) assumed for this file." << std::endl;
 }
 
 void PyNvVideoReader::fetchNextGop() {
@@ -655,7 +631,7 @@ void PyNvVideoReader::decodeNextPacket() {
 
 bool PyNvVideoReader::processDecodedFrames(const int frame_id, uint8_t* pFrame, uint8_t* pReturnFrame,
                                            bool convert_to_rgb, bool use_bgr_format,
-                                           bool& file_added_for_warning, RGBFrame* out_if_color_converted,
+                                           RGBFrame* out_if_color_converted,
                                            DecodedFrameExt* out_if_no_color_conversion) {
     while (this->return_frames_) {
         int64_t timestamp;
@@ -674,156 +650,18 @@ bool PyNvVideoReader::processDecodedFrames(const int frame_id, uint8_t* pFrame, 
             // TODO This line is important, but sometimes the timestamp returned by
             // nvdec is wrong
             if (convert_to_rgb) {
-                *out_if_color_converted =
-                    this->returnRGBFrame(pFrame, pReturnFrame, use_bgr_format, file_added_for_warning);
+                const AVColorRange color_range = this->demuxer->GetColorRange();
+                WarnIfColorRangeUnspecified(color_range);
+                *out_if_color_converted = frame_output::convert_decoded_frame_to_rgb(
+                    *decoder, pReturnFrame, reinterpret_cast<CUdeviceptr>(pFrame), color_range,
+                    use_bgr_format, /*is_async=*/false);
             } else {
-                *out_if_no_color_conversion = this->returnYUVFrame(pFrame, pReturnFrame);
+                *out_if_no_color_conversion = frame_output::copy_decoded_frame_to_yuv(
+                    *decoder, pReturnFrame, reinterpret_cast<CUdeviceptr>(pFrame),
+                    this->demuxer->GetColorRange(), /*timestamp=*/0, /*is_async=*/false);
             }
             return true;
         }
     }
     return false;
-}
-
-DecodedFrameExt PyNvVideoReader::returnYUVFrame(void* pFrame_buffer, void* pFrame) {
-    DecodedFrameExt frame;
-    frame.format = GetNativeFormat(this->decoder->GetOutputFormat());
-    auto width = size_t(this->decoder->GetWidth());
-    auto height = size_t(this->decoder->GetHeight());
-    // Currently no timestamp, any bad ?
-    // frame.timestamp = timestamp;
-    frame.SetColorRange(demuxer->GetColorRange());
-
-    // Copy the decode frames from device
-    CUDA_DRVAPI_CALL(
-        cuMemcpyDtoD((CUdeviceptr)pFrame_buffer, (CUdeviceptr)pFrame, this->decoder->GetFrameSize()));
-
-    switch (frame.format) {
-        case Pixel_Format_NV12: {
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
-                                                "|u1",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)pFrame_buffer,
-                                                false});
-            frame.views.push_back(CAIMemoryView{{height / 2, width / 2, 2},
-                                                {width / 2 * 2, 2, 1},
-                                                "|u1",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer + width * height),
-                                                false});  // todo: data+width*height assumes both planes
-                                                          // are Load DLPack Tensor
-            std::vector<size_t> shape{(size_t)(height * 1.5), width};
-            std::vector<size_t> stride{size_t(width), 1};
-            int returntype = frame.extBuf->LoadDLPack(shape, stride, "|u1",
-                                                      reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                      (CUdeviceptr)(pFrame_buffer), false);
-        } break;
-        case Pixel_Format_P016: {
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width * 2, 2, 2},
-                                                "|u2",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer),
-                                                false});
-            frame.views.push_back(CAIMemoryView{{height / 2, width / 2, 2},
-                                                {width * 2, 4, 2},
-                                                "|u2",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer + 2 * (width * height)),
-                                                false});  // todo: data+width*height assumes both planes are
-            // contiguous. Actual NVENC allocation can have padding?
-        } break;
-        case Pixel_Format_YUV444: {
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
-                                                "|u1",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer),
-                                                false});
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
-                                                "|u1",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer + width * height),
-                                                false});  // todo: data+width*height assumes both planes are
-            // contiguous. Actual NVENC allocation can have padding?
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width, 1, 1},
-                                                "|u1",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer + 2 * width * height),
-                                                false});
-        } break;
-        case Pixel_Format_YUV444_16Bit: {
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width * 2, 2, 2},
-                                                "|u2",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer),
-                                                false});
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width * 2, 2, 2},
-                                                "|u2",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer + 2 * (width * height)),
-                                                false});  // todo: data+width*height assumes both planes are
-            // contiguous. Actual NVENC allocation can have padding?
-            frame.views.push_back(CAIMemoryView{{height, width, 1},
-                                                {width * 2, 2, 2},
-                                                "|u2",
-                                                reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                                (CUdeviceptr)(pFrame_buffer + 4 * (width * height)),
-                                                false});  // todo: data+width*height assumes both planes are
-            // contiguous. Actual NVENC allocation can have padding?
-        } break;
-        default:
-            throw std::runtime_error("[ERROR] Unsupported pixel format for YUV output");
-    }
-    CUDA_DRVAPI_CALL(cuStreamSynchronize(this->decoder->GetStream()));
-    return frame;
-}
-
-RGBFrame PyNvVideoReader::returnRGBFrame(void* pFrame_buffer, void* pFrame, bool use_bgr_format,
-                                         bool& file_added_for_warning) {
-    Pixel_Format format = GetNativeFormat(this->decoder->GetOutputFormat());
-    auto width = size_t(this->decoder->GetWidth());
-    auto height = size_t(this->decoder->GetHeight());
-
-    const std::vector<size_t> frame_shape{height, width, 3};
-    const std::vector<size_t> frame_stride{width * 3, 3, 1};
-    RGBFrame rgb_frame(frame_shape, frame_stride, "|u1", reinterpret_cast<size_t>(decoder->GetStream()),
-                       reinterpret_cast<CUdeviceptr>(pFrame_buffer), false, false);
-
-    switch (format) {
-        case Pixel_Format_NV12: {
-            const CAIMemoryView y_view{{height, width, 1},
-                                       {width, 1, 1},
-                                       "|u1",
-                                       reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                       reinterpret_cast<CUdeviceptr>(pFrame),
-                                       false};
-            const CAIMemoryView uv_view{{height / 2, width / 2, 2},
-                                        {width / 2 * 2, 2, 1},
-                                        "|u1",
-                                        reinterpret_cast<size_t>(this->decoder->GetStream()),
-                                        reinterpret_cast<CUdeviceptr>(pFrame + width * height),
-                                        false};  // todo: data+width*height assumes both planes are
-                                                 // contiguous. Actual NVENC allocation can have padding?
-            const AVColorRange color_range = this->demuxer->GetColorRange();
-            if (!file_added_for_warning && (color_range != AVColorRange::AVCOL_RANGE_JPEG &&
-                                            color_range != AVColorRange::AVCOL_RANGE_MPEG)) {
-                file_added_for_warning = true;
-            }
-            const bool is_full_range = color_range == AVColorRange::AVCOL_RANGE_JPEG;
-            convert_nv12_to_rgb(y_view, uv_view, rgb_frame, is_full_range, use_bgr_format);
-        } break;
-        default: {
-            throw std::invalid_argument(
-                "[ERROR] Conversion to RGB/BGR only supported "
-                "for videos in NV12-format");
-        }
-    }
-    CUDA_DRVAPI_CALL(cuStreamSynchronize(this->decoder->GetStream()));
-    return rgb_frame;
 }

@@ -43,7 +43,7 @@ class PyNvGopDemuxer {
 
     uint32_t GetWidth() { return demuxer->GetWidth(); }
 
-    uint32_t GetFrameSize() { return demuxer->GetFrameSize(); }
+    AVPixelFormat GetPixelFormat() const { return demuxer->GetPixelFormat(); }
 
     FFmpegDemuxer* GetDemuxer() { return demuxer.get(); }
 

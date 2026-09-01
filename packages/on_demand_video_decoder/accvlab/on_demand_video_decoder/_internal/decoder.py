@@ -271,8 +271,9 @@ def CreateGopDecoder(
     Args:
         maxfiles: Maximum number of unique files that can be processed concurrently
         iGpu: GPU device ID to use for decoding (0 for primary GPU)
-        suppressNoColorRangeWarning: Suppress warning when no color range can be
-                                     extracted from video files (limited/MPEG range is assumed)
+        suppressNoColorRangeWarning: Suppress the warning emitted during RGB/BGR conversion
+                                     when the input color range is unspecified. Limited/MPEG
+                                     range is assumed regardless of this option.
         gopCacheCapacity: Maximum number of filepath entries kept in the Python GOP cache.
                           ``None`` defaults to ``maxfiles``. This capacity only affects
                           calls with ``useGOPCache=True``; each filepath stores the most

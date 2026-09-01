@@ -15,6 +15,7 @@
  */
 
 #include "PyNvBatchAsyncGopDecoder.hpp"
+#include "FrameOutput.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -33,6 +34,7 @@
 #include "nvtx3/nvtx3.hpp"
 
 namespace py = pybind11;
+namespace frame_output = accvlab::on_demand_video_decoder::internal::frame_output;
 
 // ---------------------------------------------------------------------------
 // Constructor / Destructor
@@ -225,78 +227,6 @@ void PyNvBatchAsyncGopDecoder::validate_decode_input(
     }
 }
 
-// static
-size_t PyNvBatchAsyncGopDecoder::compute_yuv_frame_bytes(Pixel_Format fmt, size_t H, size_t W) {
-    switch (fmt) {
-        case Pixel_Format_NV12:
-            // Y: H*W bytes + UV interleaved: (H/2)*W bytes = H*W*3/2
-            return H * W + (H / 2) * W;
-        case Pixel_Format_P016:
-            // Y: H*W*2 bytes + UV interleaved: (H/2)*W*2 bytes = H*W*3
-            return H * W * 3;
-        case Pixel_Format_YUV444:
-            // Y + U planes (matching GetYUVFromFrame which adds 2 views), but the full
-            // 3-plane buffer (Y+U+V = 3*H*W) must be copied for correctness.
-            return H * W * 3;
-        case Pixel_Format_YUV444_16Bit:
-            // Y + U + V, 2 bytes each: 3*H*W*2
-            return H * W * 6;
-        default:
-            throw std::runtime_error("compute_yuv_frame_bytes: unsupported pixel format " +
-                                     std::to_string(static_cast<int>(fmt)));
-    }
-}
-
-// static
-void PyNvBatchAsyncGopDecoder::build_yuv_frame(Pixel_Format fmt, size_t H, size_t W, int64_t timestamp,
-                                               DecodedFrameExt::ColorRange color_range, CUdeviceptr dst_ptr,
-                                               CUstream stream, DecodedFrameExt& out) {
-    out.format = fmt;
-    out.timestamp = timestamp;
-    out.color_range = color_range;
-    const size_t stream_id = reinterpret_cast<size_t>(stream);
-
-    switch (fmt) {
-        case Pixel_Format_NV12:
-            out.views.push_back(CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u1", stream_id, dst_ptr, false});
-            out.views.push_back(CAIMemoryView{
-                {H / 2, W / 2, 2}, {W / 2 * 2, 2, 1}, "|u1", stream_id, dst_ptr + H * W, false});
-            out.extBuf->LoadDLPack({static_cast<size_t>(H * 1.5), W}, {W, 1}, "|u1", stream_id, dst_ptr,
-                                   false);
-            break;
-        // TODO(P016): LoadDLPack rejects "|u2" typestr, so no DLPack tensor can be built.
-        case Pixel_Format_P016:
-            out.views.push_back(CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr, false});
-            out.views.push_back(CAIMemoryView{
-                {H / 2, W / 2, 2}, {W * 2, 4, 2}, "|u2", stream_id, dst_ptr + 2 * H * W, false});
-            break;
-        // TODO(YUV444): needs a flat (H*3, W) DLPack view and extBuf support for 3-plane layouts.
-        case Pixel_Format_YUV444:
-            out.views.push_back(CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u1", stream_id, dst_ptr, false});
-            out.views.push_back(
-                CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u1", stream_id, dst_ptr + H * W, false});
-            out.views.push_back(
-                CAIMemoryView{{H, W, 1}, {W, 1, 1}, "|u1", stream_id, dst_ptr + 2 * H * W, false});
-            break;
-        // TODO(YUV444_16Bit): same as P016 — LoadDLPack rejects "|u2".
-        case Pixel_Format_YUV444_16Bit:
-            out.views.push_back(CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr, false});
-            out.views.push_back(
-                CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr + 2 * H * W, false});
-            out.views.push_back(
-                CAIMemoryView{{H, W, 1}, {W * 2, 2, 2}, "|u2", stream_id, dst_ptr + 4 * H * W, false});
-            break;
-        default:
-            // Only NV12 is currently supported. Returning a DecodedFrameExt with an empty extBuf
-            // for other formats would let torch.as_tensor() silently produce a 0-dim null-pointer
-            // CUDA tensor, so we fail fast here instead.
-            throw std::runtime_error(
-                "PyNvBatchAsyncGopDecoder: DecodeFromGOPList (YUV path) only supports "
-                "Pixel_Format_NV12. Got pixel format " +
-                std::to_string(static_cast<int>(fmt)) + ". Use DecodeFromGOPListRGB for other formats.");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Common async submission path
 // ---------------------------------------------------------------------------
@@ -472,7 +402,8 @@ void PyNvBatchAsyncGopDecoder::submit_work(std::vector<std::vector<std::vector<u
                     for (int v = 0; v < V; ++v) {
                         const size_t H = std::get<0>(frames_f[v].shape);
                         const size_t W = std::get<1>(frames_f[v].shape);
-                        const size_t frame_bytes = H * W * 3;
+                        const size_t frame_bytes =
+                            frame_output::frame_bytes(frame_output::FrameOutputFormat::RGB8, H, W);
 
                         // Size each video's pool once (first frame-slot), then append.
                         if (f == 0)
@@ -480,18 +411,10 @@ void PyNvBatchAsyncGopDecoder::submit_work(std::vector<std::vector<std::vector<u
                                                                      false);
 
                         void* dst = rgb_agg_pools_[v].AddElement(frame_bytes);
-                        CUDA_DRVAPI_CALL(cuMemcpyDtoDAsync(reinterpret_cast<CUdeviceptr>(dst),
-                                                           frames_f[v].data, frame_bytes, cu_stream_));
-                        const std::vector<size_t> shape_vec = {H, W, 3};
-                        const std::vector<size_t> stride_vec = {std::get<0>(frames_f[v].stride),
-                                                                std::get<1>(frames_f[v].stride),
-                                                                std::get<2>(frames_f[v].stride)};
                         // Place at the original (unsorted) output index.
                         result.decoded_rgb_frames[v][perm_2d[v][f]] =
-                            RGBFrame(shape_vec, stride_vec, frames_f[v].typestr,
-                                     reinterpret_cast<size_t>(cu_stream_), reinterpret_cast<CUdeviceptr>(dst),
-                                     /*readOnly=*/false,
-                                     /*isBGR=*/as_bgr);
+                            frame_output::copy_rgb_frame(frames_f[v], reinterpret_cast<CUdeviceptr>(dst),
+                                                         cu_stream_, as_bgr, /*is_async=*/true);
                     }
 
                 } else {
@@ -512,22 +435,17 @@ void PyNvBatchAsyncGopDecoder::submit_work(std::vector<std::vector<std::vector<u
                         const Pixel_Format fmt = frames_f[v].format;
                         const size_t H = frames_f[v].views[0].shape[0];
                         const size_t W = frames_f[v].views[0].shape[1];
-                        const size_t frame_bytes = compute_yuv_frame_bytes(fmt, H, W);
+                        const size_t frame_bytes = frame_output::frame_bytes(
+                            frame_output::output_format_from_pixel_format(fmt), H, W);
 
                         if (f == 0)
                             yuv_agg_pools_[v].EnsureSizeAndSoftReset(static_cast<size_t>(F) * frame_bytes,
                                                                      false);
 
                         void* dst = yuv_agg_pools_[v].AddElement(frame_bytes);
-                        // Source is contiguous in gop_dec_'s pool (views[0].data = base).
-                        CUDA_DRVAPI_CALL(cuMemcpyDtoDAsync(reinterpret_cast<CUdeviceptr>(dst),
-                                                           frames_f[v].views[0].data, frame_bytes,
-                                                           cu_stream_));
-                        DecodedFrameExt frame;
-                        build_yuv_frame(fmt, H, W, frames_f[v].timestamp, frames_f[v].color_range,
-                                        reinterpret_cast<CUdeviceptr>(dst), cu_stream_, frame);
                         // Place at the original (unsorted) output index.
-                        result.decoded_yuv_frames[v][perm_2d[v][f]] = std::move(frame);
+                        result.decoded_yuv_frames[v][perm_2d[v][f]] = frame_output::copy_yuv_frame(
+                            frames_f[v], reinterpret_cast<CUdeviceptr>(dst), cu_stream_, /*is_async=*/true);
                     }
                 }
             }
